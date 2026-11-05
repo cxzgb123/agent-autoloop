@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // Failure modes: characters in the install path execute as shell source, command arguments are re-parsed,
 // or the worker cannot recover the result from a directory containing quotes and command substitutions.
 import assert from "node:assert/strict";

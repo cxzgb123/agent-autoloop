@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // `agent-autoloop uninstall`, run from a copy of the program laid out as an install is, in a throwaway home with stand-ins for
 // launchctl and systemctl: nothing real can be reached. Failure cases: the service keeps running, or one started by hand does;
 // a process that only has the old number is killed; a link is left behind, in ~/.local/bin, elsewhere on PATH or among the

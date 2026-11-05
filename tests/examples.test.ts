@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // Failure modes: shell examples cross credential boundaries, drop a receipt or forget the delivered version; answering a
 // card does not resume its matter; the example exits successfully after an HTTP error; unrelated scheduled work takes the
 // example's claim. Only curl, jq and shell builtins run.

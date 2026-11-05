@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // install.sh, in a throwaway home with a PATH made of nothing but temporary folders. The program it sets up is a copy of this
 // one and `git` is a stand-in that makes that copy, so nothing needs committing and no real folder can be written to. Failure
 // cases: the command goes somewhere that isn't on PATH, so `agent-autoloop` isn't found right after installing; someone's own

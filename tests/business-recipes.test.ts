@@ -125,36 +125,44 @@ console.log(JSON.stringify({ok:true,identity:'user',data}));
   return { dir, run, parsed: resultFrom(readMessage(run.stdout), {}) };
 }
 
-test("Feishu collection uses the reader, filters reports and fields, and consumes all table pages", () => {
-  const { dir, run, parsed } = collect();
-  assert.equal(run.status, 0, run.stderr);
-  assert.equal(parsed.problem, undefined);
-  assert.equal(parsed.result.events?.[0].type, "brief.ready");
-  assert.doesNotMatch(run.stdout, /敏感原文|演示项目/);
-  const snapshot = JSON.parse(readFileSync(join(dir, "weekly-input.json"), "utf8"));
-  assert.deepEqual(
-    snapshot.reports.map((r: { task_id: string }) => r.task_id),
-    ["report-1"],
-  );
-  assert.equal(snapshot.tables[0].records.length, 2);
-  const calls: string[][] = readFileSync(join(dir, "calls.jsonl"), "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  assert.ok(calls.every((args) => args[args.indexOf("--as") + 1] === "user"));
-  const baseCalls = calls.filter((args) => args[0] === "base");
-  assert.equal(baseCalls.length, 2);
-  assert.ok(baseCalls.every((args) => args.includes("--field-id") && args.includes("状态")));
-  assert.equal(snapshot.id, parsed.result.events![0].id);
-});
+test(
+  "Feishu collection uses the reader, filters reports and fields, and consumes all table pages",
+  { skip: process.platform === "win32" },
+  () => {
+    const { dir, run, parsed } = collect();
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(parsed.problem, undefined);
+    assert.equal(parsed.result.events?.[0].type, "brief.ready");
+    assert.doesNotMatch(run.stdout, /敏感原文|演示项目/);
+    const snapshot = JSON.parse(readFileSync(join(dir, "weekly-input.json"), "utf8"));
+    assert.deepEqual(
+      snapshot.reports.map((r: { task_id: string }) => r.task_id),
+      ["report-1"],
+    );
+    assert.equal(snapshot.tables[0].records.length, 2);
+    const calls: string[][] = readFileSync(join(dir, "calls.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.ok(calls.every((args) => args[args.indexOf("--as") + 1] === "user"));
+    const baseCalls = calls.filter((args) => args[0] === "base");
+    assert.equal(baseCalls.length, 2);
+    assert.ok(baseCalls.every((args) => args.includes("--field-id") && args.includes("状态")));
+    assert.equal(snapshot.id, parsed.result.events![0].id);
+  },
+);
 
-test("Feishu authorization failure asks once and never publishes the old snapshot or CLI details", () => {
-  const { dir, run, parsed } = collect("auth");
-  assert.equal(run.status, 0, run.stderr);
-  assert.equal(parsed.problem, undefined);
-  assert.equal(parsed.result.outcome, "done");
-  assert.equal(parsed.result.ask?.length, 1);
-  assert.equal(parsed.result.events, undefined);
-  assert.doesNotMatch(run.stdout + run.stderr, /secret must not|old data/);
-  assert.equal(JSON.parse(readFileSync(join(dir, "weekly-input.json"), "utf8")).id, "old");
-});
+test(
+  "Feishu authorization failure asks once and never publishes the old snapshot or CLI details",
+  { skip: process.platform === "win32" },
+  () => {
+    const { dir, run, parsed } = collect("auth");
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(parsed.problem, undefined);
+    assert.equal(parsed.result.outcome, "done");
+    assert.equal(parsed.result.ask?.length, 1);
+    assert.equal(parsed.result.events, undefined);
+    assert.doesNotMatch(run.stdout + run.stderr, /secret must not|old data/);
+    assert.equal(JSON.parse(readFileSync(join(dir, "weekly-input.json"), "utf8")).id, "old");
+  },
+);

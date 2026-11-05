@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // Failure modes: a recipe's rules don't pass `agent-autoloop check`, or check would pass anything; a rule names a Skill the
 // recipe doesn't ship, or the README doesn't say where to put it; a README promises one access level while the rules give
 // another; the curl in ops-alerts no longer reaches its rule, or the outside system's key can set off the restart; the

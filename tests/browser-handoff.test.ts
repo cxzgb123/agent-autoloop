@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // Failure modes: a task becomes shell syntax; a follow-up creates another browser session; an invalid URL or session
 // reaches the browser; a failed bridge is reported as success or retried; the recipe works only inside this repository.
 import assert from "node:assert/strict";

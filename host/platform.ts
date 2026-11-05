@@ -29,7 +29,11 @@ export function findProgram(name: string): string | null {
     }
   }
   try {
-    const printed = execFileSync("where", [name], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "ignore"] });
+    const printed = execFileSync("where", [name], {
+      encoding: "utf8",
+      timeout: 15_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
     return printed.trim().split(/\r?\n/)[0] || null;
   } catch {
     return null;
@@ -136,7 +140,8 @@ function launchPosix(argv: string[], cwd: string, env: NodeJS.ProcessEnv, files:
 // Windows：无 shell，用 detached 的 node 包装进程跑命令、写退出码。包装进程的最后一步是写退出码并
 // 退出，所以「进程死」即「退出码已落盘」，与 POSIX wrapper 的语义一致；父进程（worker）崩溃不丢退出码。
 // 真正的进程树/身份记账归 WinHost（ProcessSupervisor 已有 WaitForSingleObject+GetExitCodeProcess），Phase 2 落地。
-const WRAPPER = `const{spawn}=require('node:child_process');const{writeFileSync}=require('node:fs');` +
+const WRAPPER =
+  `const{spawn}=require('node:child_process');const{writeFileSync}=require('node:fs');` +
   `const[program,...args]=JSON.parse(process.env.AGENT_AUTOLOOP_ARGV);` +
   `const child=spawn(program,args,{stdio:'inherit'});` +
   `child.on('error',()=>{try{writeFileSync(process.env.AGENT_AUTOLOOP_EXIT,'1')}catch{}process.exit(1)});` +

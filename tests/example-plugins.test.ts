@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // Failure modes: an example imports something that only exists in this repository, so it loads here and breaks once
 // `agent-autoloop add` has put it elsewhere; add leaves the entry where the loader doesn't look; hello-agent's read throws on
 // output it doesn't expect (a throw stops the worker) or loses the session; hello-channel writes a card but never reports

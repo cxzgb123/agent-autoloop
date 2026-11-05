@@ -53,24 +53,28 @@ test("release scope compares the entire healthy-live range and both sides of ren
   git("mv", "app.ts", "docs/app.md");
   assert.equal(releaseRequired(root, base, commit(), config.internal), true);
 });
-test("executable or symlink documents and unknown history always need release", () => {
-  for (const mode of ["executable", "symlink"]) {
-    git("reset", "--hard", base);
-    if (mode === "executable") chmodSync(join(root, "docs/a.md"), 0o755);
-    else {
-      rmSync(join(root, "docs/a.md"));
-      symlinkSync("../app.ts", join(root, "docs/a.md"));
+test(
+  "executable or symlink documents and unknown history always need release",
+  { skip: process.platform === "win32" },
+  () => {
+    for (const mode of ["executable", "symlink"]) {
+      git("reset", "--hard", base);
+      if (mode === "executable") chmodSync(join(root, "docs/a.md"), 0o755);
+      else {
+        rmSync(join(root, "docs/a.md"));
+        symlinkSync("../app.ts", join(root, "docs/a.md"));
+      }
+      assert.equal(releaseRequired(root, base, commit(), config.internal), true);
     }
-    assert.equal(releaseRequired(root, base, commit(), config.internal), true);
-  }
-  assert.equal(releaseRequired(root, "0".repeat(40), base, config.internal), true);
-  git("reset", "--hard", base);
-  write("docs/a.md", "left");
-  const left = commit();
-  git("reset", "--hard", base);
-  write("docs/a.md", "right");
-  assert.equal(releaseRequired(root, left, commit(), config.internal), true);
-});
+    assert.equal(releaseRequired(root, "0".repeat(40), base, config.internal), true);
+    git("reset", "--hard", base);
+    write("docs/a.md", "left");
+    const left = commit();
+    git("reset", "--hard", base);
+    write("docs/a.md", "right");
+    assert.equal(releaseRequired(root, left, commit(), config.internal), true);
+  },
+);
 test("only main provides configuration, with exact path patterns and explicit local health opt-in", () => {
   write("ops/delivery.json", JSON.stringify({ ...config, internal: ["**/*"] }));
   assert.deepEqual(readMainSettings(root).internal, config.internal);

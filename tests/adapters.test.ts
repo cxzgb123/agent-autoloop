@@ -204,18 +204,22 @@ test("Codex: access, new and going on", { skip: !stubbed(codex, {}) }, () => {
   assert.ok(again.includes('model_reasoning_effort="xhigh"'));
 });
 
-test("Codex: new and resumed runs use only browser access configured for the background task", { skip: !stubbed(codex, {}) }, () => {
-  for (const resume of [null, "thread-1"]) {
-    const prompt = codex.command({ ...turn, resume }).at(-1)!;
-    assert.match(prompt, /后台 codex exec/);
-    assert.match(prompt, /本轮实际可用的浏览器工具/);
-    assert.match(prompt, /规则或 Skill.*浏览器入口/);
-    assert.match(prompt, /桌面应用.*浏览器连接/);
-    assert.match(prompt, /业务.*回执.*本轮/);
-    assert.ok(prompt.endsWith(turn.prompt));
-    assert.doesNotMatch(prompt, /~\/\.local\/bin\/|\/Users\//);
-  }
-});
+test(
+  "Codex: new and resumed runs use only browser access configured for the background task",
+  { skip: !stubbed(codex, {}) },
+  () => {
+    for (const resume of [null, "thread-1"]) {
+      const prompt = codex.command({ ...turn, resume }).at(-1)!;
+      assert.match(prompt, /后台 codex exec/);
+      assert.match(prompt, /本轮实际可用的浏览器工具/);
+      assert.match(prompt, /规则或 Skill.*浏览器入口/);
+      assert.match(prompt, /桌面应用.*浏览器连接/);
+      assert.match(prompt, /业务.*回执.*本轮/);
+      assert.ok(prompt.endsWith(turn.prompt));
+      assert.doesNotMatch(prompt, /~\/\.local\/bin\/|\/Users\//);
+    }
+  },
+);
 
 test("Codex: only a finished turn's last message is its answer", () => {
   const lines = (...events: object[]) => events.map((e) => JSON.stringify(e)).join("\n");

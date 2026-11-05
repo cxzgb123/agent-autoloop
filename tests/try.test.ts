@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // `try` against a real hub, from `init` on. Failure cases: a failure from before this try is reported as this try's, or
 // not said at all so it looks as if nothing is going on; a failure of a run that was already waiting isn't reported; a
 // question still open from before is missed because no new card comes for it, so try waits out its five minutes.

@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // The worker turns jobs into agents and what they say into results. Real processes run here (small shell scripts), because
 // what matters is what happens across their lives. Failure cases: a job starts anywhere but its rule's folder, or without
 // the prompt and the context file, or with the hub's secrets in its environment; a bad exit code or no last message counts

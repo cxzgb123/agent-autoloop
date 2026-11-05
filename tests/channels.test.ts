@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // The channels that ship and the webhook adapter. No real listener runs here: only one can hold an app's card clicks.
 // Failure cases: a first send uses a key that changes with the version, or an update sends a new message; a failed send
 // isn't reported; a click that isn't a card's is taken; a card's options don't show while it's open or still show after;

@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // The whole loop, with nothing faked but the agent: a real `agent-autoloop up` in its own process, from `init` on, through the
 // protocol as everything else speaks it. An event comes in; the agent runs and asks; the owner answers from the command line;
 // the agent goes on and finishes. Failure cases: init leaves something out; `up` doesn't start, or starts twice; the run isn't

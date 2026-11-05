@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-bit fixtures (B1)
 // The channel a new install starts with. Nothing real is shown here: the notify commands are stand-ins on PATH, and the one
 // run of the real osascript swaps the notification for a line that only prints. Failure cases: what an Agent wrote in a card's
 // title runs as AppleScript, or a title starting with a dash is read as an option (osascript runs what follows -e as script);
