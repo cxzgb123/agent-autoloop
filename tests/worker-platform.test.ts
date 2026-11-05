@@ -50,7 +50,7 @@ test("a node agent (no shell) runs to done on this platform, with its context fi
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(results.length, 1, "no result came back");
-  assert.equal(results[0].outcome, "done");
+  assert.equal(results[0].outcome, "done", JSON.stringify(results[0]));
   assert.equal(results[0].summary, "改好了");
 });
 

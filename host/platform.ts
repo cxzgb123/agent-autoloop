@@ -133,18 +133,30 @@ function launchPosix(argv: string[], cwd: string, env: NodeJS.ProcessEnv, files:
   return child.pid!;
 }
 
-// Windows：直接 spawn（无 shell）。stdout/stderr 由 OS 写文件；退出码由 close 事件写。
-// shortcut: 退出码写在本进程的 close 回调里，worker 崩溃则该轮退出码丢失 —— Phase 2 改由 WinHost
-// 用 WaitForSingleObject+GetExitCodeProcess 记账（ProcessSupervisor 已有此能力），届时替换这里。
+// Windows：无 shell，用 detached 的 node 包装进程跑命令、写退出码。包装进程的最后一步是写退出码并
+// 退出，所以「进程死」即「退出码已落盘」，与 POSIX wrapper 的语义一致；父进程（worker）崩溃不丢退出码。
+// 真正的进程树/身份记账归 WinHost（ProcessSupervisor 已有 WaitForSingleObject+GetExitCodeProcess），Phase 2 落地。
+const WRAPPER = `const{spawn}=require('node:child_process');const{writeFileSync}=require('node:fs');` +
+  `const[program,...args]=JSON.parse(process.env.AGENT_AUTOLOOP_ARGV);` +
+  `const child=spawn(program,args,{stdio:'inherit'});` +
+  `child.on('error',()=>{try{writeFileSync(process.env.AGENT_AUTOLOOP_EXIT,'1')}catch{}process.exit(1)});` +
+  `child.on('exit',(code)=>{try{writeFileSync(process.env.AGENT_AUTOLOOP_EXIT,String(code??1))}catch{}process.exit(code??1)});`;
+
 function launchWindows(argv: string[], cwd: string, env: NodeJS.ProcessEnv, files: LaunchFiles): number {
-  const [program, ...args] = argv;
   const outFd = openSync(files.out, "w");
   const errFd = openSync(files.err, "w");
-  const child = spawn(program, args, { cwd, env, detached: true, stdio: ["ignore", outFd, errFd] });
+  const child = spawn(process.execPath, ["-e", WRAPPER], {
+    cwd,
+    env: {
+      ...env,
+      AGENT_AUTOLOOP_ARGV: JSON.stringify(argv),
+      AGENT_AUTOLOOP_EXIT: files.exit,
+    },
+    detached: true,
+    stdio: ["ignore", outFd, errFd],
+  });
   closeSync(outFd);
   closeSync(errFd);
-  child.on("close", (code) => writeFileSync(files.exit, String(code ?? 1)));
-  child.on("error", () => writeFileSync(files.exit, "1"));
   child.unref();
   return child.pid!;
 }
