@@ -2,7 +2,7 @@
 // the worker's adapter reads, one JSON object per line.
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import type { Turn } from "../../worker/agents.ts";
 
@@ -16,7 +16,8 @@ export function permission(turn: Pick<Turn, "access" | "cwd">, params: any) {
   const inside = (location: any) => {
     if (typeof location.path !== "string" || !isAbsolute(location.path)) return false;
     const path = relative(realpathSync(turn.cwd), resolved(location.path));
-    return path !== ".." && !path.startsWith("../") && !isAbsolute(path);
+    // A segment check, not a prefix check: `..\` must not slip past, and `..` in the middle must not either.
+    return !path.split(sep).includes("..") && !isAbsolute(path);
   };
   const editsInside =
     turn.access === "edit" && tool.kind === "edit" && tool.locations?.length > 0 && tool.locations.every(inside);

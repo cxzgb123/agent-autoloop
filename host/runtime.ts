@@ -37,6 +37,17 @@ export const environment = {
 };
 
 export const db = new DatabaseSync(join(HOME, "hub.db"));
+let dbOpen = true;
+/** Tests on Windows need the db closed before their home directory can be removed; harmless to call more than once. */
+export function closeDb() {
+  if (!dbOpen) return;
+  dbOpen = false;
+  try {
+    db.close();
+  } catch {
+    // Already closed by a test that holds the db directly.
+  }
+}
 db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;");
 if (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='events'").get()) {
   throw new Error("这是旧版数据库；本轮未提供导入工具，请使用新的 AGENT_AUTOLOOP_HOME");

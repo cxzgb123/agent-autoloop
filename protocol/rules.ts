@@ -1,6 +1,7 @@
 // rules.json: the sources that may send events, the agents that do the work, the channels that reach the owner, the
 // rules between them and, only to be shown, the scheduled tasks that run elsewhere. A mistake is caught here with a
 // message saying where: at start it stops the hub, later it leaves the old rules running and the owner is told.
+import { isAbsolute } from "node:path";
 import { nextRun, parseCron } from "../kernel/cron.ts";
 import { SCHEDULE, type Rule, type Rules } from "../kernel/rules.ts";
 
@@ -71,7 +72,11 @@ function checkRule(issues: string[], rules: Rules, rule: Rule, names: Set<string
     ["name", isText, NOT_EMPTY],
     ["when", isObject, "要是一个对象"],
     ["to", isKeyOf(rules.agents), `不是已登记的 Agent：${isObject(rule) ? rule.to : ""}`],
-    ["cwd", (value) => typeof value === "string" && /^(~\/|\/)/.test(value), "要是以 ~/ 或 / 开头的目录"],
+    [
+      "cwd",
+      (value) => typeof value === "string" && (/^~(?:[/\\])/.test(value) || isAbsolute(value)),
+      "要是绝对目录（盘符、UNC 或 ~/ 开头）",
+    ],
     ["skill", isText, NOT_EMPTY, true],
     ["prompt", isText, NOT_EMPTY, true],
     ["group", isText, NOT_EMPTY, true],
