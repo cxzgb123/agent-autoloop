@@ -1,5 +1,6 @@
 // Failure modes: an owner whose login shell isn't POSIX (fish) can't start any agent because the worker's command for
 // that shell doesn't parse there, or making it parse lets the install path or an argument run as shell source.
+// POSIX-only: the worker on Windows spawns with no login shell at all (B1), so these shell-quoting semantics don't apply.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -7,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-const scratch = mkdtempSync(join(tmpdir(), "agent-autoloop-login-shell-"));
+if (process.platform !== "win32") {
+  const scratch = mkdtempSync(join(tmpdir(), "agent-autoloop-login-shell-"));
 const home = join(scratch, "quote' $(touch path-injected)");
 const project = join(scratch, "project");
 mkdirSync(project);
@@ -74,3 +76,4 @@ async function runUnder(shell: string, run: number) {
 test("an agent starts under a login shell without POSIX syntax", () => runUnder(standIn, 1));
 
 test("an agent starts under a real fish", { skip: !fish && "fish isn't installed" }, () => runUnder(fish, 2));
+}

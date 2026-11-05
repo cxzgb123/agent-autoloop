@@ -96,7 +96,12 @@ test("ACP chooses only a one-time permission and respects structured kinds and r
   assert.equal(ask("read", { kind: "execute", title: "read file" }).optionId, "no");
   assert.equal(ask("edit", { kind: "edit", locations: [{ path: join(home, "new.txt") }] }).optionId, "once");
   mkdirSync(join(home, "work"));
-  symlinkSync(tmpdir(), join(home, "work", "escape"));
+  // 符号链接逃逸：Windows 上建 symlink 需要管理员权限（NTFS），改建目录连接（junction，不需要管理员）等价验证。
+  try {
+    symlinkSync(tmpdir(), join(home, "work", "escape"));
+  } catch {
+    symlinkSync(tmpdir(), join(home, "work", "escape"), "junction");
+  }
   assert.equal(
     ask("edit", { kind: "edit", locations: [{ path: join(home, "work", "escape", "outside") }] }).optionId,
     "no",

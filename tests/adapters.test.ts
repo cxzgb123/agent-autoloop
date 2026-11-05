@@ -13,16 +13,19 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { setup } from "./helpers.ts";
 
-process.env.PATH = `/nonexistent:${process.env.PATH}`;
 const { findProgram } = await import("../worker/agents.ts");
-// Command construction must also run on CI machines without Codex installed.
-const shell = process.env.SHELL;
-const lookup = join(setup("adapters"), "lookup.sh");
-writeFileSync(lookup, '#!/bin/sh\nprintf "%s\\n" /test/codex\n', { mode: 0o755 });
-process.env.SHELL = lookup;
-findProgram("codex");
-if (shell === undefined) delete process.env.SHELL;
-else process.env.SHELL = shell;
+// Command construction must also run on CI machines without Codex installed. The shell-based lookup only exists on
+// POSIX; on Windows findProgram uses where.exe and there is nothing to prime.
+if (process.platform !== "win32") {
+  process.env.PATH = `/nonexistent:${process.env.PATH}`;
+  const shell = process.env.SHELL;
+  const lookup = join(setup("adapters"), "lookup.sh");
+  writeFileSync(lookup, '#!/bin/sh\nprintf "%s\\n" /test/codex\n', { mode: 0o755 });
+  process.env.SHELL = lookup;
+  findProgram("codex");
+  if (shell === undefined) delete process.env.SHELL;
+  else process.env.SHELL = shell;
+}
 type Adapter = import("../worker/agents.ts").Adapter;
 const claude: Adapter = (await import("../plugins/claude/agent.ts")).default;
 const codex: Adapter = (await import("../plugins/codex/agent.ts")).default;
@@ -201,7 +204,7 @@ test("Codex: access, new and going on", { skip: !stubbed(codex, {}) }, () => {
   assert.ok(again.includes('model_reasoning_effort="xhigh"'));
 });
 
-test("Codex: new and resumed runs use only browser access configured for the background task", () => {
+test("Codex: new and resumed runs use only browser access configured for the background task", { skip: !stubbed(codex, {}) }, () => {
   for (const resume of [null, "thread-1"]) {
     const prompt = codex.command({ ...turn, resume }).at(-1)!;
     assert.match(prompt, /后台 codex exec/);
