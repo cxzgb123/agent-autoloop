@@ -26,6 +26,9 @@ switch (action)
     case "hang":
         RunHangCleanup(node, mockAgent);
         break;
+    case "tree":
+        RunTreeEnumeration(node, mockAgent);
+        break;
     case "selftest":
         Console.WriteLine("WinHost Phase 0 selftest OK: .NET 10 + Job Object P/Invoke 已加载");
         break;
@@ -70,7 +73,7 @@ static void RunHangCleanup(string node, string mockAgent)
 
     // 等子进程出现（hang 模式会 spawn 一个 node -e setInterval 的子进程）。
     Thread.Sleep(1_000);
-    var children = FindDescendants(job.Pid).Where(p => p != job.Pid).ToList();
+    var children = job.JobProcessIds().Where(p => p != job.Pid).ToList();
     Console.WriteLine($"[hang] 进程树内子进程数 = {children.Count}（期望 >= 1）");
     if (children.Count < 1)
     {
@@ -89,6 +92,35 @@ static void RunHangCleanup(string node, string mockAgent)
         Environment.Exit(1);
     }
     Console.WriteLine("Phase 0 进程树清理 PASS（KILL_ON_JOB_CLOSE + TerminateJobObject）");
+}
+
+// --- 三代进程树：证明 Job 内精确枚举不漏孙进程 ---
+static void RunTreeEnumeration(string node, string mockAgent)
+{
+    var env = new Dictionary<string, string> { ["MOCK_MODE"] = "tree" };
+    var launchId = DateTime.UtcNow.Ticks;
+    using var job = JobProcess.Start("", $"\"{node}\" \"{mockAgent}\"", Path.GetDirectoryName(mockAgent)!, launchId, env);
+    Console.WriteLine($"[tree] launchID={job.LaunchId} pid={job.Pid} started");
+
+    // 等三代进程都出现（root -> child -> grandchild 全部挂住）。
+    Thread.Sleep(1_500);
+    var ids = job.JobProcessIds();
+    Console.WriteLine($"[tree] Job 内精确枚举找到 {ids.Count} 个进程：{string.Join(",", ids)}（期望 3：root/child/grandchild）");
+    if (ids.Count < 3)
+    {
+        Console.Error.WriteLine("[tree] FAIL: Job 内精确枚举仍漏了进程");
+        Environment.Exit(1);
+    }
+    job.Stop();
+    Thread.Sleep(500);
+    var anyAlive = ids.Any(IsAlive);
+    Console.WriteLine($"[tree] TerminateJobObject 后仍有存活 = {anyAlive}（期望 False）");
+    if (anyAlive)
+    {
+        Console.Error.WriteLine("[tree] FAIL: 进程树未被清干净");
+        Environment.Exit(1);
+    }
+    Console.WriteLine("Phase 2 Job 内精确枚举 PASS（三代进程树不漏、Stop 全清）");
 }
 
 // --- 工具 ---
@@ -165,16 +197,4 @@ static bool IsAlive(int pid)
 {
     try { using var _ = Process.GetProcessById(pid); return !_.HasExited; }
     catch { return false; }
-}
-
-static List<int> FindDescendants(int rootPid)
-{
-    var outIds = new List<int>();
-    // Phase 0 只粗证「hang 模式下存在父 PID == rootPid 的子 node 进程，Stop 后全部消失」；
-    // Job 内精确进程枚举（QueryInformationJobObject）在 Phase 2 引入，届时替换这里。
-    foreach (var p in Process.GetProcessesByName("node"))
-    {
-        try { if (Native.GetParentPid(p.Id) == rootPid) outIds.Add(p.Id); } catch { }
-    }
-    return outIds;
 }

@@ -97,6 +97,33 @@ public sealed class JobProcess : IDisposable
         return GetExitCodeProcess(_hProcess, out var code) ? (int)code : -1;
     }
 
+    /// <summary>Job 内精确进程枚举（QueryInformationJobObject / JobObjectBasicProcessIdList）。不依赖父 PID，跨代不漏。</summary>
+    public IReadOnlyList<int> JobProcessIds()
+    {
+        // 一次监督的进程树规模很小；给足槽位（1024 个 PID）一次读全，超了说明是异常，报错而不是截断。
+        const int maxSlots = 1024;
+        var size = 2 * sizeof(uint) + maxSlots * IntPtr.Size;
+        var buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            if (!QueryInformationJobObject(_job, JobObjectInfoType.BasicProcessIdList, buffer, (uint)size, out _))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "QueryInformationJobObject 失败");
+            var ids = new List<int>();
+            var n = Marshal.ReadInt32(buffer, 4); // NumberOfProcessIdsInList
+            for (var i = 0; i < n; i++)
+            {
+                var slot = buffer + 2 * sizeof(uint) + i * IntPtr.Size;
+                var pid = Marshal.ReadIntPtr(slot).ToInt64();
+                if (pid != 0) ids.Add((int)pid);
+            }
+            return ids;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
     /// <summary>停止整棵进程树。优雅停止不是 SIGTERM 语义，这里直接 TerminateJobObject；有 provider stop 能力时由上层先请求。</summary>
     public void Stop()
     {
@@ -159,7 +186,7 @@ public sealed class JobProcess : IDisposable
     [StructLayout(LayoutKind.Sequential)]
     private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION { public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation; public IO_COUNTERS IoInfo; public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed; }
 
-    private enum JobObjectInfoType { ExtendedLimitInformation = 9 }
+    private enum JobObjectInfoType { BasicProcessIdList = 3, ExtendedLimitInformation = 9 }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateProcessW(
@@ -173,6 +200,9 @@ public sealed class JobProcess : IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetInformationJobObject(IntPtr hJob, JobObjectInfoType infoType, IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(IntPtr hJob, JobObjectInfoType infoType, IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength, out uint lpReturnLength);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);

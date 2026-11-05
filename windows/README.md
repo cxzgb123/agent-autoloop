@@ -11,7 +11,7 @@
 | `mock-agent.mjs` | 零依赖假 Agent，normal/hang 两种模式，子进程继承 Job | 文档 16 节 `tests/fixtures/mock-agent.mjs` | 已运行验证 |
 | `WinHost/ProcessSupervisor.cs` | `CreateProcessW(CREATE_SUSPENDED)` → `AssignProcessToJobObject(KILL_ON_JOB_CLOSE)` → `ResumeThread`，任一步失败 fail closed 且回收自己持有的句柄，绝不 taskkill 任意 PID | 文档 8.2 / 8.3 | 已运行验证 |
 | `WinHost/Program.cs` | `rounds`（两轮闭环）/ `hang`（进程树清理）/ `pipe`（Named Pipe 控制面）/ `selftest` 四个动作 | 文档 462 行退出条件 | 已运行验证 |
-| `WinHost/Native.cs` | `NtQueryInformationProcess` 读父 PID（Phase 0 粗证用） | — | 已运行验证 |
+| `WinHost/Native.cs` | `NtQueryInformationProcess` 读父 PID（Phase 0 粗证用，Phase 2 已删除） | — | 已删除 |
 | `WinHost/ControlPipe.cs` | Named Pipe 入口：长度前缀协议、4KB 上限、单连接、方法白名单 `ping`/`status`、管道名带 installUUID、SDDL 拒绝网络/匿名 | 文档 10.1 | 白名单/长度/连接已运行验证 |
 
 ## 验证结果
@@ -42,5 +42,5 @@ Phase 0 进程树清理 PASS（KILL_ON_JOB_CLOSE + TerminateJobObject）
 ## 本次交付的边界
 
 - 这是**独立的技术尖峰**，不是产品入口；没有接 TS Hub、没有账本、没有对账，`launchID` 只是 `DateTime.UtcNow.Ticks`。
-- 进程树枚举用父 PID 粗证，Job 内精确枚举（`QueryInformationJobObject`）留到 Phase 2。
+- 进程树枚举在 Phase 2 已从父 PID 粗证换成 Job 内精确枚举（`QueryInformationJobObject` / `JobObjectBasicProcessIdList`），三代进程树不漏孙进程（`winhost tree` 验证）。
 - 没有引入任何 Windows 服务、注册表、Task Scheduler、通知注册，也不改动上游 TS 源码或账号配置。
