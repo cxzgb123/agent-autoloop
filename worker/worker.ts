@@ -2,7 +2,7 @@
 // job. An agent runs detached, in its own process group, writing to files, so the worker can stop and come back and
 // find it still going, or finished. A job is saved before anything slow happens; a result is saved before it's handed
 // in and stays until the hub has taken it.
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -18,10 +18,10 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 import { HubError, type Hub } from "../protocol/client.ts";
 import { HOME } from "../host/home.ts";
+import { alive, expandHome, groupAlive, launch as launchProcess, signal } from "../host/platform.ts";
 import type { Job } from "../protocol/job.ts";
 import { addUsage, type Notice, type Result } from "../protocol/validate.ts";
 import { adapterFor, type Adapter, type Reading, type Turn, type Usage } from "./agents.ts";
@@ -115,45 +115,7 @@ const files = (entry: Entry) => ({
   exit: path.join(entry.dir, `exit-${entry.turn}`),
   command: path.join(entry.dir, `command-${entry.turn}.sh`),
 });
-const quoted = (word: string) => `'${word.replaceAll("'", `'\\''`)}'`;
 const marker = (entry: Entry) => `agent-autoloop-run:${entry.run}:${entry.attempt}:${entry.turn}`;
-
-/** Whether the run's process is still going: false when it is gone, null when we could not look. */
-function alive(entry: Entry): boolean | null {
-  if (!entry.pid) return false;
-  try {
-    const command = execFileSync("ps", ["-p", String(entry.pid), "-o", "command="], { encoding: "utf8" });
-    return command.includes(marker(entry));
-  } catch (error) {
-    // A process that is gone makes ps exit with status 1; anything else (EPERM, EACCES, a spawn
-    // failure) means we could not look, which is not the same as it being gone.
-    const status = (error as { status?: number | null }).status;
-    if (status === 1) return false;
-    return null;
-  }
-}
-
-function signal(entry: Entry, name: NodeJS.Signals) {
-  try {
-    if (entry.pid) process.kill(-entry.pid, name);
-  } catch {}
-}
-
-/** Whether anything in the run's group is still going, null when we could not look. */
-function groupAlive(entry: Entry): boolean | null {
-  // The wrapper can die before a child; zombies have already stopped and only their parent can reap them.
-  try {
-    return execFileSync("ps", ["-ax", "-o", "pgid=", "-o", "stat="], { encoding: "utf8" })
-      .trim()
-      .split("\n")
-      .some((line) => {
-        const [group, state] = line.trim().split(/\s+/);
-        return Number(group) === entry.pid && !state.startsWith("Z");
-      });
-  } catch {
-    return null;
-  }
-}
 
 function snapshot(file: string) {
   if (!existsSync(file)) return "";
@@ -214,7 +176,7 @@ export function createWorker({
     delete entry.why;
     save(entry);
     const { rule, agent } = entry.job;
-    const cwd = rule.cwd.replace(/^~(?=\/)/, homedir());
+    const cwd = expandHome(rule.cwd);
     const turn: Turn = {
       prompt,
       session: entry.session,
@@ -230,35 +192,10 @@ export function createWorker({
     if (!existsSync(cwd)) throw new Error(`在 ${cwd} 启动不了：这个目录不存在`);
     const argv = adapter.command(turn);
     const { out, err, exit, command } = files(entry);
-    // Login shells don't agree on how a command reads its arguments (fish has no $0 or $@), so the command waits in a
-    // file for /bin/sh. Its path travels by environment because the install path can hold any character.
-    writeFileSync(command, `unset AGENT_AUTOLOOP_COMMAND\nexec ${argv.map(quoted).join(" ")}\n`, { mode: 0o600 });
-    // Output and the exit code go through the shell, so they land in their files even if this program has gone by then.
-    const script = [
-      "out=$1",
-      "err=$2",
-      "result=$3",
-      "shift 3",
-      "umask 077",
-      '"$@" >"$out" 2>"$err"',
-      'echo $? >"$result.tmp"',
-      'mv "$result.tmp" "$result"',
-      // A final external command can replace the shell before publishing its exit file.
-      ":",
-    ].join("\n");
-    // The login shell gives it the PATH and sign-in its owner has in a terminal; launchd and systemd give neither.
-    const login = [process.env.SHELL ?? "/bin/sh", "-lc", 'exec /bin/sh "$AGENT_AUTOLOOP_COMMAND"'];
-    const child = spawn("/bin/sh", ["-c", script, marker(entry), out, err, exit, ...login], {
-      cwd,
-      env: { ...agentEnvironment(entry), AGENT_AUTOLOOP_COMMAND: command },
-      detached: true,
-      stdio: "ignore",
-    });
-    child.on("error", (error) => log(`run ${entry.run}: ${error}`));
-    child.unref();
-    entry.pid = child.pid;
+    const pid = launchProcess(argv, cwd, agentEnvironment(entry), { out, err, exit, command }, marker(entry));
+    entry.pid = pid;
     save(entry);
-    log(`run ${entry.run} (${rule.name}) turn ${entry.turn} started, pid ${child.pid}`);
+    log(`run ${entry.run} (${rule.name}) turn ${entry.turn} started, pid ${pid}`);
   }
 
   function endWith(entry: Entry, result: Result) {
@@ -399,10 +336,10 @@ export function createWorker({
     }
     const { exit } = files(entry);
     if (entry.stopping !== undefined) {
-      const going = groupAlive(entry);
+      const going = groupAlive(entry.pid);
       if (going !== false) {
         const overdue = now() - entry.stopping > STOP_GRACE;
-        if (overdue) signal(entry, "SIGKILL");
+        if (overdue) signal(entry.pid, "SIGKILL");
         // Unable to look, the kill is the last we can know of it; waiting to see it gone would hold the run forever.
         if (going || !overdue) return;
       }
@@ -410,7 +347,7 @@ export function createWorker({
     }
     if (existsSync(exit)) return conclude(entry, adapter, Number(readFileSync(exit, "utf8").trim()));
     // The shell can publish its exit between the first file check and ps returning.
-    const looking = alive(entry);
+    const looking = alive(entry.pid, marker(entry));
     if (looking === false) {
       return conclude(entry, adapter, existsSync(exit) ? Number(readFileSync(exit, "utf8").trim()) : null);
     }
@@ -452,7 +389,7 @@ export function createWorker({
     entry.stopping = now();
     entry.why = why;
     save(entry);
-    signal(entry, "SIGTERM");
+    signal(entry.pid, "SIGTERM");
     log(`run ${entry.run}: stopping (${why})`);
   }
 

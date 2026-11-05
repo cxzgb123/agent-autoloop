@@ -16,6 +16,7 @@ const APPLESCRIPT = ["on run argv", "display notification (item 2 of argv) with 
 export function notifyCommand(title: string, platform: string = process.platform): [string, string[]] {
   const body = `${title}\n${WORDS}`;
   if (platform === "darwin") return ["osascript", [...APPLESCRIPT.flatMap((line) => ["-e", line]), "--", TITLE, body]];
+  if (platform === "win32") throw new Error("Windows 桌面通知还没落地（NOT_RUN）");
   return ["notify-send", ["--", TITLE, body]];
 }
 
@@ -23,6 +24,7 @@ function hasDesktop() {
   if (process.platform === "darwin") {
     return spawnSync("launchctl", ["print", `gui/${process.getuid!()}`], { stdio: "ignore" }).status === 0;
   }
+  // Windows 无 notify-send，也没有已落地的 Toast 通道（NOT_RUN）；按「无桌面」如实报 skipped，不假装送达。
   return process.platform === "linux" && Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
 }
 

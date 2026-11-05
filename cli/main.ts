@@ -140,8 +140,10 @@ function linkSkill() {
 
 /** What to type to run this program: its name if that's what a shell finds, otherwise where it is. */
 function howToRun() {
-  const found = spawnSync("/bin/sh", ["-c", "command -v agent-autoloop"], { encoding: "utf8" }).stdout.trim();
-  if (found && realpathSync(found) === realpathSync(PROGRAM)) return "agent-autoloop";
+  if (process.platform !== "win32") {
+    const found = spawnSync("/bin/sh", ["-c", "command -v agent-autoloop"], { encoding: "utf8" }).stdout.trim();
+    if (found && realpathSync(found) === realpathSync(PROGRAM)) return "agent-autoloop";
+  }
   return /\s/.test(PROGRAM) ? `'${PROGRAM}'` : PROGRAM;
 }
 

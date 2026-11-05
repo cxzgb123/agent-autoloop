@@ -2,9 +2,9 @@
 // about one: its command line and how to read its output. `plugins/<use>/agent.ts`, in this install's folder first,
 // then the ones that ship. Anything with a print mode needs no file at all: `use: "command"` with a command line in
 // rules.json.
-import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { findProgram as platformFind } from "../host/platform.ts";
 import { loadPlugin } from "../host/plugins.ts";
 import type { Usage } from "../protocol/validate.ts";
 
@@ -62,17 +62,7 @@ const found = new Map<string, string | null>();
 /** Where a program is: on the login shell's PATH (launchd and systemd start with a bare one), or in one of these. */
 export function findProgram(name: string, elsewhere: () => string[] = () => []) {
   if (!found.has(name)) {
-    const shell = process.env.SHELL ?? "/bin/sh";
-    let onPath: string | null = null;
-    try {
-      const printed = execFileSync(shell, ["-lc", `command -v ${name}`], {
-        encoding: "utf8",
-        timeout: 15_000,
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-      onPath = printed.trim().split("\n").at(-1) || null;
-    } catch {}
-    found.set(name, onPath ?? elsewhere().find(existsSync) ?? null);
+    found.set(name, platformFind(name) ?? elsewhere().find(existsSync) ?? null);
   }
   const program = found.get(name);
   if (!program) throw new Error(`找不到 ${name}：先装好并登录`);

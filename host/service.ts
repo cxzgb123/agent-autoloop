@@ -78,6 +78,10 @@ const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(
 
 export function installService() {
   mkdirSync(path.join(HOME, "logs"), { recursive: true, mode: 0o700 });
+  if (process.platform === "win32") {
+    // 文档 15.3 / B3：Windows 常驻走 Task Scheduler，本 Phase 未落地（NOT_RUN，见 windows/scripts/）。
+    throw new Error("Windows 上的常驻服务（Task Scheduler）还没落地；先手动跑 agent-autoloop up");
+  }
   if (process.platform === "darwin") {
     mkdirSync(path.dirname(plistFile()), { recursive: true });
     writeFileSync(plistFile(), plist());
@@ -95,6 +99,7 @@ export function installService() {
 }
 
 export function removeService() {
+  if (process.platform === "win32") return; // 没有安装过 Task Scheduler 任务（NOT_RUN），无事可卸。
   const file = process.platform === "darwin" ? plistFile() : unitFile();
   if (!existsSync(file)) return;
   const service = readFileSync(file, "utf8");
@@ -117,6 +122,15 @@ export function runningUp() {
   const file = path.join(HOME, "up.pid");
   if (!existsSync(file)) return null;
   const pid = readFileSync(file, "utf8").trim();
+  if (process.platform === "win32") {
+    // 没有 ps 可验命令身份；只测存活。PID 复用与身份指纹是 B9，Phase 2 由 WinHost 账本兜住。
+    try {
+      process.kill(Number(pid), 0);
+      return Number(pid);
+    } catch {
+      return null;
+    }
+  }
   let command = "";
   try {
     command = execFileSync("ps", ["-p", pid, "-o", "command="], {
@@ -139,6 +153,7 @@ export function stopUp() {
 
 /** The service this program installs and can restart. */
 export function serviceRunning() {
+  if (process.platform === "win32") return false; // 没有 Task Scheduler 任务（NOT_RUN）。
   if (process.platform === "darwin") return existsSync(plistFile()) && launchdHasIt();
   return spawnSync("systemctl", ["--user", "is-active", "--quiet", label()], { stdio: "ignore" }).status === 0;
 }
