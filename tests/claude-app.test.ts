@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX/macOS 专属（systemd/launchctl 服务 / Claude 桌面应用路径）
 // Finding the Claude Code the desktop app ships. Failure case: the app keeps files such as auto-update-state.json next
 // to its version folders, and reading one of them as a folder throws ENOTDIR, so every Claude turn fails instead of
 // using the copy that is there.

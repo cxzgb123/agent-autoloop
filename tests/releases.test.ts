@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX 专属（git clone 安装语义 / /bin/sh+ps+负 PGID）
 // What someone installing or updating gets. Failure cases: they get main as it stands, checked or not, instead of the newest
 // release; version numbers sort as text, so v1.9.0 beats v1.10.0; a tag that isn't a release is taken for one; an install
 // made before releases, sitting on main, is left there; a copy from a repository given by hand is sent to tags it was never

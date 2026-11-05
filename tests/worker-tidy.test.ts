@@ -92,25 +92,29 @@ test("only finished runs' folders old enough go", () => {
   rmSync(inHand, { recursive: true });
 });
 
-test("a folder that can't be cleared is said and leaves the rest to go", { skip: process.getuid!() === 0 }, () => {
-  const lines: string[] = [];
-  const worker = createWorker({ hub: quiet() as any, name: "w1", wait: 0, log: (line) => lines.push(line) });
-  const stuck = finished("5-1", 15);
-  const locked = join(stuck, "locked");
-  mkdirSync(locked);
-  chmodSync(locked, 0o000);
-  age(stuck, 15);
-  const other = finished("6-1", 15);
-  try {
-    assert.doesNotThrow(() => worker.tidy());
-    assert.equal(existsSync(other), false);
-    assert.equal(existsSync(stuck), true);
-    assert.ok(lines.some((line) => line.includes("5-1")));
-  } finally {
-    chmodSync(locked, 0o700);
-    rmSync(stuck, { recursive: true });
-  }
-});
+test(
+  "a folder that can't be cleared is said and leaves the rest to go",
+  { skip: process.getuid?.() === 0 || process.platform === "win32" },
+  () => {
+    const lines: string[] = [];
+    const worker = createWorker({ hub: quiet() as any, name: "w1", wait: 0, log: (line) => lines.push(line) });
+    const stuck = finished("5-1", 15);
+    const locked = join(stuck, "locked");
+    mkdirSync(locked);
+    chmodSync(locked, 0o000);
+    age(stuck, 15);
+    const other = finished("6-1", 15);
+    try {
+      assert.doesNotThrow(() => worker.tidy());
+      assert.equal(existsSync(other), false);
+      assert.equal(existsSync(stuck), true);
+      assert.ok(lines.some((line) => line.includes("5-1")));
+    } finally {
+      chmodSync(locked, 0o700);
+      rmSync(stuck, { recursive: true });
+    }
+  },
+);
 
 test("a session's total goes after three months without use, and not before", () => {
   const worker = createWorker({ hub: quiet() as any, name: "w1", wait: 0 });
@@ -126,7 +130,7 @@ test("a session's total goes after three months without use, and not before", ()
 
 test(
   "session totals that can't be cleared are said once and don't stop the worker",
-  { skip: process.getuid!() === 0 },
+  { skip: process.getuid?.() === 0 || process.platform === "win32" },
   () => {
     const lines: string[] = [];
     const worker = createWorker({ hub: quiet() as any, name: "w1", wait: 0, log: (line) => lines.push(line) });

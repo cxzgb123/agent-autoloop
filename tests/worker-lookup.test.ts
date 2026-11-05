@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX 专属（git clone 安装语义 / /bin/sh+ps+负 PGID）
 // Failure modes: the worker cannot run ps at all (the sandbox forbids it, or it is missing or not executable), and it
 // reports a run that is still going as finished because the failed lookup was read as "the process is gone"; or, unable
 // to look, it holds a stuck or stopped run forever because its timeout and its stop wait on a sighting that never comes.

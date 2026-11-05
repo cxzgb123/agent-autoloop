@@ -1,3 +1,4 @@
+if (process.platform === "win32") process.exit(0); // POSIX/macOS 专属（systemd/launchctl 服务 / Claude 桌面应用路径）
 // Which service runs this on a machine. Failure cases: doctor says a service running from a system-level unit isn't
 // running; an update takes that unit for its own, writes a user-level one beside it, and fails where there's no user
 // manager or starts a second hub where there is; a user-level service isn't restarted by an update; a Mac is asked about
