@@ -6,11 +6,14 @@
 //     「非预期身份被拒」的验证，需要 CreateNamedPipeW P/Invoke 与第二个 Windows 账号，本机
 //     只有一个账号，记 NOT_RUN（见 windows/README.md 的 NOT_RUN 清单）。
 // 这是 Phase 0 收尾的可运行证明，不是产品入口：Phase 2 才会把管理请求经此转到 TS Hub 的私有控制通道。
+using System.ComponentModel;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32.SafeHandles;
 
 namespace WinHost;
 
@@ -40,7 +43,8 @@ public sealed class ControlPipe
 
     /// <summary>
     /// 显式 DACL 的 SDDL：只允许当前用户，拒绝 Network 与 Anonymous 登录。
-    /// 施加到管道需要 CreateNamedPipeW（P/Invoke 携带 SECURITY_ATTRIBUTES），本 Phase 未落地，记 NOT_RUN。
+    /// 由 CreateNamedPipeW（P/Invoke 携带 SECURITY_ATTRIBUTES）真正施加到管道；「非预期身份被拒」
+    /// 仍需第二个 Windows 账号实机验证，本机只有一个，记 NOT_RUN。
     /// </summary>
     public static string SecuritySddl()
     {
@@ -55,13 +59,16 @@ public sealed class ControlPipe
     {
         while (!_stop.IsCancellationRequested)
         {
-            // 注意：PipeOptions.Asynchronous 会让 WaitForConnectionAsync 卡住不返回，这里必须用 None。
-            var server = new NamedPipeServerStream(
-                _pipeName,
-                PipeDirection.InOut,
-                MaxInstances,
-                PipeTransmissionMode.Byte,
-                PipeOptions.None);
+            NamedPipeServerStream server;
+            try
+            {
+                server = CreateDaclPipe();
+            }
+            catch (Exception error)
+            {
+                Console.Error.WriteLine($"[pipe] 建管道失败：{error.Message}");
+                throw;
+            }
             try
             {
                 await server.WaitForConnectionAsync(_stop.Token).ConfigureAwait(false);
@@ -71,9 +78,10 @@ public sealed class ControlPipe
             {
                 return;
             }
-            catch
+            catch (Exception error)
             {
-                // 一个坏连接不影响下一个。
+                // 一个坏连接不影响下一个；但管道本身建不起来要报出来，否则控制面静默失效。
+                Console.Error.WriteLine($"[pipe] 连接失败：{error.Message}");
             }
             finally
             {
@@ -83,6 +91,114 @@ public sealed class ControlPipe
     }
 
     public void Stop() => _stop.Cancel();
+
+    // 用 CreateNamedPipeW 携带 SECURITY_ATTRIBUTES 真正施加 SecuritySddl() 的 DACL。
+    // .NET 的 NamedPipeServerStreamAcl.Create 在 .NET 10 有 bug（ERROR_INVALID_PARAMETER），
+    // 所以这里直接 P/Invoke，再把原始句柄包成 NamedPipeServerStream（文档 10.1）。
+    private NamedPipeServerStream CreateDaclPipe()
+    {
+        var sddl = SecuritySddl();
+        var secDesc = IntPtr.Zero;
+        var sa = IntPtr.Zero;
+        var handle = IntPtr.Zero;
+        try
+        {
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ref secDesc, out _))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "ConvertStringSecurityDescriptorToSecurityDescriptor 失败");
+
+            sa = Marshal.AllocHGlobal(Marshal.SizeOf<SECURITY_ATTRIBUTES>());
+            Marshal.StructureToPtr(new SECURITY_ATTRIBUTES
+            {
+                nLength = (uint)Marshal.SizeOf<SECURITY_ATTRIBUTES>(),
+                lpSecurityDescriptor = secDesc,
+                bInheritHandle = false,
+            }, sa, false);
+
+            // PIPE_ACCESS_DUPLEX，PIPE_TYPE_BYTE + PIPE_READMODE_BYTE + PIPE_WAIT 都是 0，单实例。
+            // 不用 FILE_FLAG_OVERLAPPED：同步 NamedPipeServerStream 盖在 overlapped 句柄上会卡在 WaitForConnectionAsync。
+            const uint access = 0x00000003;
+            handle = CreateNamedPipeW(
+                $@"\\.\pipe\{_pipeName}", access,
+                0 /* type=byte | readmode=byte | wait */,
+                1, 0, 0, 0, sa);
+            if (handle == new IntPtr(-1))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateNamedPipeW 失败");
+
+            // 读回管道对象自己的 DACL，证明 deny ACE 真施加到了对象上（不只存在于 SDDL 字符串里）。
+            // 读回时 GENERIC_ALL 被映射成 FILE_ALL_ACCESS（FA），所以按「Deny ACE 目标 SID」判断，不锁死掩码。
+            var applied = ReadBackDaclSddl(handle);
+            if (!applied.Contains("(D;;") || !applied.Contains(";;;NU)") || !applied.Contains(";;;AN)"))
+            {
+                CloseHandle(handle);
+                throw new InvalidOperationException($"管道 DACL 施加失败：读回 SDDL 缺 Network/Anonymous Deny：{applied}");
+            }
+
+            var safe = new SafePipeHandle(handle, ownsHandle: true);
+            handle = IntPtr.Zero; // 已交给 SafePipeHandle
+            return new NamedPipeServerStream(PipeDirection.InOut, isAsync: false, isConnected: false, safe);
+        }
+        finally
+        {
+            if (handle != IntPtr.Zero) CloseHandle(handle);
+            if (sa != IntPtr.Zero) Marshal.FreeHGlobal(sa);
+            if (secDesc != IntPtr.Zero) LocalFree(secDesc);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SECURITY_ATTRIBUTES
+    {
+        public uint nLength;
+        public IntPtr lpSecurityDescriptor;
+        public bool bInheritHandle;
+    }
+
+    // 从对象句柄读回 DACL 并转成 SDDL 字符串，验证 deny ACE 真落到了对象上。
+    private static string ReadBackDaclSddl(IntPtr handle)
+    {
+        var sdSize = 0u;
+        GetKernelObjectSecurity(handle, DACL_SECURITY_INFORMATION, IntPtr.Zero, 0, ref sdSize);
+        if (sdSize == 0) return "";
+        var sd = Marshal.AllocHGlobal((int)sdSize);
+        try
+        {
+            if (!GetKernelObjectSecurity(handle, DACL_SECURITY_INFORMATION, sd, sdSize, ref sdSize))
+                return "";
+            if (ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, 1, DACL_SECURITY_INFORMATION, out var sddlPtr, out _))
+            {
+                try { return Marshal.PtrToStringUni(sddlPtr) ?? ""; } finally { LocalFree(sddlPtr); }
+            }
+            return "";
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(sd);
+        }
+    }
+
+    private const uint DACL_SECURITY_INFORMATION = 0x00000004;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateNamedPipeW(
+        string lpName, uint dwOpenMode, uint dwPipeMode, uint nMaxInstances,
+        uint nOutBufferSize, uint nInBufferSize, uint nDefaultTimeOut, IntPtr lpSecurityAttributes);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        string stringSecurityDescriptor, uint stringSDRevision, ref IntPtr securityDescriptor, out uint securityDescriptorSize);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool ConvertSecurityDescriptorToStringSecurityDescriptorW(
+        IntPtr securityDescriptor, uint stringSDRevision, uint securityInformation, out IntPtr stringSecurityDescriptor, out uint stringSecurityDescriptorLen);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetKernelObjectSecurity(IntPtr handle, uint securityInformation, IntPtr securityDescriptor, uint length, ref uint lengthNeeded);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr LocalFree(IntPtr hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
 
     private static async Task<int> ReadExact(NamedPipeServerStream server, byte[] buffer, int count)
     {
