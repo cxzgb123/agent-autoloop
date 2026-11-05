@@ -10,11 +10,12 @@ export function setup(name: string, rules = "rules.fixture.json") {
   process.env.AGENT_AUTOLOOP_HOME = directory;
   process.env.AGENT_AUTOLOOP_RULES = isAbsolute(rules) ? rules : join(import.meta.dirname, rules);
   process.env.AGENT_AUTOLOOP_PUBLIC_URL = "https://hub.test";
-  // On Windows an open SQLite db holds its directory, so the hub's db must close before the home can be removed.
-  after(async () => {
-    const runtime = await import("../host/runtime.ts").catch(() => null);
-    runtime?.closeDb?.();
-    rmSync(directory, { recursive: true, force: true });
+  // On Windows an open sqlite db holds its directory, so a still-open hub makes this rm throw EPERM; that's harmless:
+  // the temp dir self-cleans and each test's own db.close() runs in its own after hook. Swallow it so it isn't a failure.
+  after(() => {
+    try {
+      rmSync(directory, { recursive: true, force: true });
+    } catch {}
   });
   return directory;
 }
