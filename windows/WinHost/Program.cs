@@ -2,6 +2,7 @@
 //   winhost rounds   —— 用 mock-agent.mjs 正常模式连续跑两轮，证明受监督的启动/退出闭环。
 //   winhost hang     —— 用 mock-agent.mjs hang 模式（父子进程都挂住），证明 TerminateJobObject 清整棵进程树。
 // 这是文档第 8 节 Job Object 合同的最小可运行证明；不是产品入口，后面 Phase 2 才会接 TS Hub 的账本与对账。
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.AccessControl;
@@ -29,6 +30,9 @@ switch (action)
     case "tree":
         RunTreeEnumeration(node, mockAgent);
         break;
+    case "ledger":
+        RunLedger(node, mockAgent);
+        break;
     case "selftest":
         Console.WriteLine("WinHost Phase 0 selftest OK: .NET 10 + Job Object P/Invoke 已加载");
         break;
@@ -36,7 +40,7 @@ switch (action)
         ControlPipeSelftest();
         break;
     default:
-        Console.Error.WriteLine($"未知动作：{action}（rounds | hang | pipe | selftest）");
+        Console.Error.WriteLine($"未知动作：{action}（rounds | hang | tree | ledger | pipe | selftest）");
         Environment.Exit(2);
         break;
 }
@@ -121,6 +125,57 @@ static void RunTreeEnumeration(string node, string mockAgent)
         Environment.Exit(1);
     }
     Console.WriteLine("Phase 2 Job 内精确枚举 PASS（三代进程树不漏、Stop 全清）");
+}
+
+// --- 身份与账本：区分「还在跑 / 已退 / 启动失败」 ---
+static void RunLedger(string node, string mockAgent)
+{
+    var ledger = new ExecutionLedger();
+    var dir = Path.GetDirectoryName(mockAgent)!;
+
+    // 1) 正常启动 → Running，身份含启动时间 + exe 路径。
+    var launchOk = DateTime.UtcNow.Ticks;
+    using (var job = JobProcess.Start("", $"\"{node}\" \"{mockAgent}\"", dir, launchOk, new Dictionary<string, string> { ["MOCK_MODE"] = "normal" }))
+    {
+        ledger.RecordLaunch(job.Identity);
+        Console.WriteLine($"[ledger] identity 指纹 = {job.Identity.Fingerprint}");
+        var startedOk = job.Identity.StartedAt != DateTime.MinValue && job.Identity.ExePath.Length > 0;
+        Console.WriteLine($"[ledger] 启动时间+exe 路径都拿到 = {startedOk}（期望 True）");
+        if (!startedOk) { Console.Error.WriteLine("[ledger] FAIL: 身份缺启动时间或 exe 路径"); Environment.Exit(1); }
+        var state = ledger.StateOf(launchOk);
+        Console.WriteLine($"[ledger] 运行中状态 = {state}（期望 Running）");
+        if (state != ExecutionState.Running) { Console.Error.WriteLine("[ledger] FAIL: 运行中状态不对"); Environment.Exit(1); }
+        var code = job.Wait(30_000);
+        ledger.RecordExit(launchOk, code);
+    }
+
+    var exited = ledger.StateOf(launchOk);
+    Console.WriteLine($"[ledger] 退出后状态 = {exited}（期望 Exited）");
+    if (exited != ExecutionState.Exited) { Console.Error.WriteLine("[ledger] FAIL: 退出状态不对"); Environment.Exit(1); }
+
+    // 2) 启动失败（不存在的 exe）→ LaunchFailed，也留记录。
+    var launchBad = DateTime.UtcNow.Ticks;
+    try
+    {
+        JobProcess.Start("", "\"Z:\\no\\such\\agent.exe\"", dir, launchBad);
+        Console.Error.WriteLine("[ledger] FAIL: 本应启动失败却成功了");
+        Environment.Exit(1);
+    }
+    catch (Win32Exception error)
+    {
+        ledger.RecordLaunchFailed(launchBad, error.Message);
+    }
+    var failed = ledger.StateOf(launchBad);
+    Console.WriteLine($"[ledger] 启动失败状态 = {failed}（期望 LaunchFailed）");
+    if (failed != ExecutionState.LaunchFailed) { Console.Error.WriteLine("[ledger] FAIL: 启动失败状态不对"); Environment.Exit(1); }
+
+    // 3) 同 launchID 只记一棵树：重复 RecordLaunch 覆盖而不是新增。
+    var distinct = ledger.Records.Select(r => r.LaunchId).Distinct().Count();
+    var total = ledger.Records.Count;
+    Console.WriteLine($"[ledger] 记录数 = {total}，去重 launchID = {distinct}（期望相等）");
+    if (distinct != total) { Console.Error.WriteLine("[ledger] FAIL: 同 launchID 出现多棵树"); Environment.Exit(1); }
+
+    Console.WriteLine("Phase 2 身份与账本 PASS（还在跑/已退/启动失败 三态可区分）");
 }
 
 // --- 工具 ---

@@ -5,6 +5,7 @@
 // 因为用 PID 反查的 Process 对象不持有退出码能力。
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace WinHost;
 
@@ -15,17 +16,23 @@ public sealed class JobProcess : IDisposable
     private readonly IntPtr _hProcess;
     private readonly int _pid;
     private readonly long _launchId;
+    private readonly DateTime _startedAt;
+    private readonly string _exePath;
 
     public long LaunchId => _launchId;
     public int Pid => _pid;
     public bool IsRunning => WaitForSingleObject(_hProcess, 0) == WAIT_TIMEOUT;
+    /// <summary>进程身份（文档 8.3）：launchID + 启动时间 + exe 路径指纹；PID 仅诊断。</summary>
+    public ProcessIdentity Identity => new(_launchId, _startedAt, _exePath, _pid);
 
-    private JobProcess(IntPtr job, IntPtr hProcess, int pid, long launchId)
+    private JobProcess(IntPtr job, IntPtr hProcess, int pid, long launchId, DateTime startedAt, string exePath)
     {
         _job = job;
         _hProcess = hProcess;
         _pid = pid;
         _launchId = launchId;
+        _startedAt = startedAt;
+        _exePath = exePath;
     }
 
     /// <summary>启动并监督一个进程。node 等经 PATH 解析的 exe 用完整命令行；本地 exe 用 applicationName。</summary>
@@ -64,7 +71,8 @@ public sealed class JobProcess : IDisposable
                     throw;
                 }
                 CloseHandle(pi.hThread);
-                return new JobProcess(job, pi.hProcess, (int)pi.dwProcessId, launchId);
+                var (startedAt, exePath) = ReadIdentity(pi.hProcess);
+                return new JobProcess(job, pi.hProcess, (int)pi.dwProcessId, launchId, startedAt, exePath);
             }
             finally
             {
@@ -76,6 +84,20 @@ public sealed class JobProcess : IDisposable
             CloseHandle(job);
             throw;
         }
+    }
+
+    // 从自己持有的 hProcess 读进程身份（文档 8.3）：启动时间 + exe 路径。PID 仅诊断，不参与身份比较。
+    private static (DateTime StartedAt, string ExePath) ReadIdentity(IntPtr hProcess)
+    {
+        var startedAt = DateTime.MinValue;
+        if (GetProcessTimes(hProcess, out var create, out _, out _, out _))
+            startedAt = DateTime.FromFileTimeUtc(create);
+        var exePath = "";
+        var sb = new StringBuilder(512);
+        uint size = (uint)sb.Capacity;
+        if (QueryFullProcessImageNameW(hProcess, 0, sb, ref size))
+            exePath = sb.ToString(0, (int)size);
+        return (startedAt, exePath);
     }
 
     // CREATE_UNICODE_ENVIRONMENT 需要双 NUL 结尾的宽字符环境块：继承当前进程环境再叠加 override。
@@ -223,5 +245,18 @@ public sealed class JobProcess : IDisposable
     private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetProcessTimes(IntPtr hProcess, out long lpCreationTime, out long lpExitTime, out long lpKernelTime, out long lpUserTime);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageNameW(IntPtr hProcess, uint dwFlags, StringBuilder lpExeName, ref uint lpdwSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
+}
+
+/// <summary>进程身份（文档 8.3）：launchID + 启动时间 + exe 路径指纹；PID 仅诊断，不参与相等性。</summary>
+public sealed record ProcessIdentity(long LaunchId, DateTime StartedAt, string ExePath, int Pid)
+{
+    /// <summary>相等性只看 launchID（同 launchID 不产生第二棵进程树）；启动时间/exe 是核对指纹。</summary>
+    public string Fingerprint => $"{LaunchId}/{StartedAt.Ticks}/{ExePath.ToUpperInvariant()}";
 }

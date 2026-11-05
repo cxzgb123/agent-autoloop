@@ -18,6 +18,14 @@ echo === 进程树清理 ===
 dotnet "%OUT%\winhost.dll" hang || exit /b 1
 
 echo.
+echo === Job 内精确枚举（三代进程树） ===
+dotnet "%OUT%\winhost.dll" tree || exit /b 1
+
+echo.
+echo === 身份与账本（还在跑/已退/启动失败） ===
+dotnet "%OUT%\winhost.dll" ledger || exit /b 1
+
+echo.
 echo === Named Pipe 控制面 ===
 dotnet "%OUT%\winhost.dll" pipe || exit /b 1
 
