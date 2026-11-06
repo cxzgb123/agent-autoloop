@@ -22,6 +22,14 @@ export function addUsage(total: Usage | undefined, more: Usage | undefined): Usa
     if (more[field] !== undefined) result[field] = (result[field] ?? 0) + more[field];
   return result;
 }
+export type EffectRequest = {
+  key: string;
+  kind: string;
+  target: string;
+  parameters?: Record<string, unknown>;
+  expectedState: string;
+  reason: string;
+};
 export type Result = {
   outcome: "done" | "nothing" | "failed" | "cancelled";
   summary?: string;
@@ -32,6 +40,7 @@ export type Result = {
   notice?: Notice[];
   resolve?: { card: number; reason: string }[];
   later?: Later[];
+  effect?: EffectRequest[];
   events?: EventInput[];
 };
 export type Rejected = { card?: number; what?: string; reason: string };
@@ -141,6 +150,15 @@ const validLater = (later: Item) =>
     ? later.at === undefined
     : dateTime(later.at) && text(later.about, 4000) && later.cancel === undefined);
 
+const validEffect = (effect: Item) =>
+  only(effect, ["key", "kind", "target", "parameters", "expectedState", "reason"]) &&
+  text(effect.key, 100) &&
+  text(effect.kind, 50) &&
+  text(effect.target, 200) &&
+  text(effect.expectedState, 200) &&
+  text(effect.reason, 4000) &&
+  (effect.parameters === undefined || isItem(effect.parameters));
+
 const validUsage = (usage: unknown) =>
   usage === undefined ||
   (isItem(usage) &&
@@ -152,7 +170,19 @@ export function parseResult(input: unknown): Result {
   }
   const result = { ...input } as Item;
   if (
-    !only(result, ["outcome", "summary", "error", "session", "usage", "ask", "notice", "resolve", "later", "events"])
+    !only(result, [
+      "outcome",
+      "summary",
+      "error",
+      "session",
+      "usage",
+      "ask",
+      "notice",
+      "resolve",
+      "later",
+      "events",
+      "effect",
+    ])
   ) {
     throw new InputError("结果里有不认识的字段");
   }
@@ -172,6 +202,9 @@ export function parseResult(input: unknown): Result {
   }
   if (!listOf(result.later, 10, validLater)) {
     throw new InputError("later 每一项要有 key，以及带时区的 at 和 about，或者 cancel: true，最多 10 项");
+  }
+  if (!listOf(result.effect, 20, validEffect)) {
+    throw new InputError("effect 每一项要有 key、kind、target、expectedState、reason，parameters 要是对象，最多 20 项");
   }
   if (result.events !== undefined) {
     if (!items(result.events, 100)) throw new InputError("events 最多 100 项");

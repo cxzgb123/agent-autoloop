@@ -61,6 +61,10 @@ const DEFAULTS: Partial<Record<Table, Row>> = {
     ...nulls("decided_at", "closed_at"),
   },
   deliveries: NOT_DELIVERED,
+  effects: {
+    state: "requested",
+    ...nulls("principal", "run_id", "card_id", "approved_at", "declined_at"),
+  },
 };
 
 type Given = { type: string; seq: number; now: number; at: string; env: Environment; rules: Rules };
@@ -221,6 +225,72 @@ function cardFromReceipt(draft: Draft, run: Row, kind: string, card: Row) {
   createCard(draft, { ...card, hops: hopsOf(draft, run), key, kind, quiet, ...threadOf(run), ...origin });
 }
 
+/** A worker's effect request: recorded once, its raw parameters never stored, its approval never a worker's word. */
+function requestEffect(draft: Draft, run: Row, effect: Row): string | null {
+  // The approval binds to what the action actually is: kind, target, expected state and parameters. Reason is
+  // justification, not identity. Any change to the bound fields voids the old approval and needs a new one.
+  const parameterHash = digest(
+    JSON.stringify([effect.kind, effect.target, effect.expectedState, effect.parameters ?? null]),
+  );
+  const existing = draft.view.get("effects", effect.key);
+  if (existing) {
+    if (existing.parameter_hash === parameterHash) return null; // The same effect again: recorded once, nothing to do.
+    // The parameters changed: any earlier approval is void, and the owner must approve this new, concrete request again.
+    put(draft, "effects", effect.key, {
+      key: effect.key,
+      kind: effect.kind,
+      target: effect.target,
+      parameter_hash: parameterHash,
+      expected_state: effect.expectedState,
+      reason: effect.reason,
+      state: "requested",
+      principal: null,
+      approved_at: null,
+      declined_at: null,
+    });
+    // The card must show the action as it now is, not what it was when first asked; an already-decided one is asked again.
+    const card = rows(draft.view, "cards", { key: `effect:${effect.key}` })[0];
+    if (card) {
+      put(draft, "cards", card.id, {
+        title: `要不要执行：${effect.target}`,
+        text: `${effect.reason}\n\n这是要做的动作：${effect.kind}（参数按 ${parameterHash} 核验）`,
+        state: "open",
+        ...nulls("choice", "answer", "by", "decided_at", "closed_at", "answer_event"),
+      });
+    }
+    return "参数变了，要重新批准";
+  }
+  put(draft, "effects", effect.key, {
+    key: effect.key,
+    kind: effect.kind,
+    target: effect.target,
+    parameter_hash: parameterHash,
+    expected_state: effect.expectedState,
+    reason: effect.reason,
+    state: "requested",
+    principal: null,
+    run_id: run.id,
+    card_id: null,
+    created_at: draft.at,
+    approved_at: null,
+    declined_at: null,
+  });
+  const made = createCard(draft, {
+    key: `effect:${effect.key}`,
+    kind: "ask",
+    title: `要不要执行：${effect.target}`,
+    text: `${effect.reason}\n\n这是要做的动作：${effect.kind}（参数按 ${parameterHash} 核验）`,
+    options: ["批准执行", "不执行"],
+    about: effect.key,
+    // No rule/lane/grp: answering this approves the effect for the executor, never re-runs the agent that asked.
+    source: sourceOf(draft.view, run.id),
+    agent: run.agent,
+    run: run.id,
+  });
+  put(draft, "effects", effect.key, { card_id: made.card });
+  return null;
+}
+
 /** Notices what has gone quiet: a worker that stopped coming, a run its worker stopped mentioning. */
 function sweep(draft: Draft) {
   const { now } = draft;
@@ -374,6 +444,10 @@ function applyReceipt(draft: Draft, run: Row, result: Result) {
   }
   for (const ask of result.ask ?? []) cardFromReceipt(draft, run, "ask", ask);
   for (const notice of result.notice ?? []) cardFromReceipt(draft, run, "notice", notice);
+  for (const effect of result.effect ?? []) {
+    const problem = requestEffect(draft, run, effect);
+    if (problem) rejected.push({ what: "effect", reason: problem });
+  }
   if (rule?.tell === "always" && result.outcome === "done") {
     const once = { fyi: true, once: true, ...threadOf(run), source: sourceOf(draft.view, id), run: id };
     notify(draft, `run:${id}:done`, run.rule, summary, once);
@@ -451,6 +525,18 @@ function answer(draft: Draft, id: number, given: Row) {
   const eventId = recordEvent(draft, card.source ?? SCHEDULE, event, rule ? [rule.name] : []);
   const decision = { choice: given.choice ?? null, answer: text, by: given.by ?? null, decided_at: draft.at };
   put(draft, "cards", id, { state: "decided", ...decision, answer_event: eventId, version: card.version + 1 });
+  // An effect card's answer is the only thing that approves or declines the effect; a worker's receipt never is.
+  if (card.key.startsWith("effect:") && card.about) {
+    const effect = draft.view.get("effects", card.about);
+    if (effect && effect.state === "requested") {
+      const approved = given.choice === 0;
+      put(draft, "effects", card.about, {
+        state: approved ? "approved" : "declined",
+        principal: given.by ?? "本人",
+        ...(approved ? { approved_at: draft.at, declined_at: null } : { declined_at: draft.at, approved_at: null }),
+      });
+    }
+  }
   if (rule) enqueue(draft, rule, eventId, card.lane, card.agent === rule.to ? card.session : null);
   return { changed: true, state: "decided" };
 }
@@ -530,6 +616,13 @@ const HANDLERS: Record<string, (draft: Draft, ...args: any[]) => unknown> = {
   },
   ingest,
   createCard,
+  effectUnknown(draft, key) {
+    const effect = draft.view.get("effects", key);
+    if (!effect) throw new NotFound("没有这个动作");
+    // The executor couldn't verify what ran: it stays unknown, and nothing re-requests or re-approves it from here.
+    put(draft, "effects", key, { state: "unknown" });
+    return true;
+  },
   tell(draft, key, title, text) {
     const told = createCard(draft, { key, title, text, kind: "notice", fyi: true, once: true });
     if (!told.duplicate) return told;

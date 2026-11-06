@@ -122,3 +122,19 @@ CREATE TABLE keys (
   PRIMARY KEY (kind, name)
 );
 
+CREATE TABLE effects (
+  key TEXT NOT NULL PRIMARY KEY,
+  kind TEXT NOT NULL,
+  target TEXT NOT NULL,
+  parameter_hash TEXT NOT NULL,
+  expected_state TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  state TEXT NOT NULL,
+  principal TEXT,
+  run_id INTEGER,
+  card_id INTEGER,
+  created_at TEXT NOT NULL,
+  approved_at TEXT,
+  declined_at TEXT
+);
+

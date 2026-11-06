@@ -8,7 +8,7 @@ import { parseResult, type Result } from "../protocol/validate.ts";
 
 const FAILED = ["没跑成", "FAILED"];
 const NOTHING = ["没事可做", "NOTHING"];
-const RECEIPT_FIELDS = ["ask", "notice", "resolve", "later", "events"];
+const RECEIPT_FIELDS = ["ask", "notice", "resolve", "later", "events", "effect"];
 const BLOCK = /```agent-autoloop[ \t]*\r?\n([\s\S]*?)```/g;
 const unique = <T>(items: T[]) => [...new Set(items)];
 
@@ -59,7 +59,8 @@ export function promptFor(job: Job, contextFile: string) {
  "notice":[{"title":"一句话","text":"非他亲自做不可的事：要他做什么"}],
  "resolve":[{"card":12,"reason":"在哪核实了已解决或本人已决定"}],
  "later":[{"key":"这次复查的固定名字","at":"带时区的时间，比如 2026-11-05T09:00:00+08:00",\
-"about":"到时候查什么、怎么算过"}]${emits}}`,
+"about":"到时候查什么、怎么算过"}],
+ "effect":[{"key":"这个动作的固定名字","kind":"merge 或 send","target":"对象","parameters":{},"expectedState":"做完的样子","reason":"为什么要做"}]${emits}}`,
     "```",
     "- ask 和 notice 会打断人，能不发就不发。写给不看代码、也看不到这一轮对话的人：" +
       "出了什么事，现在恢复没有，有什么影响，要他做什么或你的建议。不写技术缩写、状态码、文件路径和内部编号。",
