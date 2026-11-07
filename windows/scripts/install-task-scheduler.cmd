@@ -1,26 +1,61 @@
 @echo off
 rem ============================================================================
-rem  NOT_RUN 骨架 —— 未在真机验证，只描述要做的事，绝不声称已常驻。
-rem
-rem  Task Scheduler 部署（文档 15.3）的最小命令骨架。真实安装与停机测试必须在干净
-rem  Windows 11 VM 上跑，并核验文档 15.3 列出的每项（InteractiveToken、登录触发、
-rem  ExecutionTimeLimit=PT0S、MultipleInstancesPolicy=IgnoreNew、WakeToRun=false 等）。
-rem  本脚本不执行任何调度，只打印契约，避免把「没验证的常驻」伪装成「已启用」。
+rem  Task Scheduler logon task - NOT_RUN skeleton. Default prints the contract;
+rem  --check runs a static self-check of the XML against the doc-15.3 contract.
+rem  Real deploy + stop testing must happen on a clean Windows 11 VM.
+rem  NOTE: this file is ASCII-only on purpose: cmd parses .cmd in the OEM code
+rem  page, and UTF-8 Chinese comments break the parser (garbled to stray chars).
 rem ============================================================================
 
-setlocal
+setlocal enabledelayedexpansion
+cd /d "%~dp0"
+
+set "XML=%~dp0agent-autoloop-logon.xml"
+
+if /i "%~1"=="--check" goto check
+
 echo.
-echo NOT_RUN: 这是 Task Scheduler 骨架，未执行真实注册，也未做停机测试。
-echo 真实部署所需的 schtasks 参数（拟议，需真机验证）：
+echo NOT_RUN: Task Scheduler logon-task skeleton. No real registration, no stop test.
+echo Proposed schtasks (must be verified on a real machine):
 echo.
-echo   schtasks /Create /TN "agent-autoloop-<installUUID>" ^
-echo     /TR "\"C:\path\to\winhost.exe\" --dataHome \"C:\path\to\home\"" ^
-echo     /SC ONLOGON /RL LIMITED /F
+echo   schtasks /Create /TN "agent-autoloop-^<installUUID^>" /XML "%XML%" /F
 echo.
-echo 需另行设置的 XML 级字段（schtasks 不直接暴露）：
-echo   ExecutionTimeLimit=PT0S（避免默认 72 小时把常驻宿主结束）
-echo   MultipleInstancesPolicy=IgnoreNew（配应用自身单实例锁）
-echo   WakeToRun=false（默认不叫醒电脑）
-echo.
-echo 退出码 0 表示「骨架存在」，不代表「已验证」。请勿据此宣称常驻已启用。
+echo Before real deploy, replace __CURRENT_USER__ / __LAUNCHER_PATH__ / __DATA_HOME__
+echo in the XML and verify on a clean VM: InteractiveToken, logon trigger,
+echo ExecutionTimeLimit=PT0S, MultipleInstancesPolicy=IgnoreNew, WakeToRun=false, no password.
+echo Exit code 0 means "skeleton exists", not "verified".
 endlocal
+exit /b 0
+
+:check
+set "FAIL=0"
+if not exist "%XML%" (
+  echo [check] FAIL: task XML not found: %XML%
+  set "FAIL=1"
+  goto done
+)
+rem Static self-check: each doc-15.3 field must be present.
+for %%K in (InteractiveToken LeastPrivilege LogonTrigger MultipleInstancesPolicy IgnoreNew WakeToRun ExecutionTimeLimit PT0S RestartOnFailure Count Interval PT1M) do (
+  findstr /c:"%%K" "%XML%" >nul || (
+    echo [check] FAIL: XML missing %%K
+    set "FAIL=1"
+  )
+)
+rem Must NOT appear: password, SYSTEM, S4U.
+for %%K in (Password SYSTEM S4U) do (
+  findstr /c:"%%K" "%XML%" >nul && (
+    echo [check] FAIL: XML contains forbidden %%K
+    set "FAIL=1"
+  )
+)
+rem WakeToRun must be false, never true.
+findstr /c:"<WakeToRun>false</WakeToRun>" "%XML%" >nul || (
+  echo [check] FAIL: WakeToRun is not false
+  set "FAIL=1"
+)
+if "!FAIL!"=="1" goto done
+echo [check] XML static self-check PASS (logon deploy + stop test still NOT_RUN, needs clean VM)
+:done
+endlocal
+if "%FAIL%"=="1" exit /b 1
+exit /b 0

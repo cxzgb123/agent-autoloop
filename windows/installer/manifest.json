@@ -1,0 +1,11 @@
+{
+  "product": "agent-autoloop",
+  "version": "0.0.0-phase4",
+  "launcher": "winhost.exe",
+  "platform": "windows-x64",
+  "nodeRuntime": ">=24",
+  "dotnetRuntime": "net10.0-windows",
+  "signed": false,
+  "sha256": "__FILL_AT_RELEASE__",
+  "dataHome": "%LOCALAPPDATA%\\agent-autoloop\\data"
+}
