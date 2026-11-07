@@ -32,8 +32,14 @@ switch (action)
     case "pipe":
         ControlPipeSelftest();
         break;
+    case "tray":
+        TraySelftest();
+        break;
+    case "notify":
+        NotifySelftest(node);
+        break;
     default:
-        Console.Error.WriteLine($"未知动作：{action}（rounds | hang | pipe | selftest）");
+        Console.Error.WriteLine($"未知动作：{action}（rounds | hang | pipe | tray | notify | selftest）");
         Environment.Exit(2);
         break;
 }
@@ -89,6 +95,77 @@ static void RunHangCleanup(string node, string mockAgent)
         Environment.Exit(1);
     }
     Console.WriteLine("Phase 0 进程树清理 PASS（KILL_ON_JOB_CLOSE + TerminateJobObject）");
+}
+
+// --- 管理页 / 托盘 ---
+static void TraySelftest()
+{
+    // 只构造页面与托盘标题，不 Show：真实渲染/交互是桌面会话项，真机 NOT_RUN。
+    var states = Enum.GetValues<TrayStatus>();
+    foreach (var s in states)
+    {
+        var text = TrayContext.StatusText(s);
+        if (string.IsNullOrWhiteSpace(text)) { Console.Error.WriteLine($"[tray] FAIL: 状态 {s} 没有文本"); Environment.Exit(1); }
+    }
+    Console.WriteLine($"[tray] 四态文本 = {string.Join(" / ", states.Select(TrayContext.StatusText))}");
+
+    // 别人写的字（Agent 标题）当普通文本，绝不解释成标记：状态文本本身不该包含换行等格式控制。
+    foreach (var s in states)
+    {
+        var text = TrayContext.StatusText(s);
+        if (text.Contains('\n') || text.Contains('\r') || text.Contains('<')) { Console.Error.WriteLine("[tray] FAIL: 状态文本含格式控制"); Environment.Exit(1); }
+    }
+
+    // 托盘图标与页面构造不抛异常；真正的显示与可达性（键盘/Narrator/高对比/高 DPI）真机 NOT_RUN。
+    using var icon = TrayContext.CreateIcon(TrayStatus.Running);
+    Console.WriteLine($"[tray] 托盘标题 = {icon.Text}（期望 运行中）");
+    if (icon.Text != "运行中") { Console.Error.WriteLine("[tray] FAIL: 托盘标题不对"); Environment.Exit(1); }
+
+    var toggled = new List<string>();
+    using var page = TrayContext.CreatePage(() => TrayStatus.NeedsDecision, () => toggled.Add("start"), () => toggled.Add("stop"));
+    Console.WriteLine($"[tray] 管理页控件数 = {page.Controls.Count}（期望 4）");
+    if (page.Controls.Count != 4) { Console.Error.WriteLine("[tray] FAIL: 管理页控件数不对"); Environment.Exit(1); }
+    Console.WriteLine("Phase 4 管理页/托盘 PASS（真实显示与可达性：NOT_RUN，需桌面会话）");
+}
+
+// --- 通知 ---
+static void NotifySelftest(string node)
+{
+    var uuid = Guid.NewGuid().ToString("N");
+    var appId = Notifications.AppId(uuid);
+    Console.WriteLine($"[notify] AUMID = {appId}");
+
+    // cardID 是幂等身份，revision 是更新身份；不含 cardID 就不构成可追踪通知（文档 15.2）。
+    var toast = new Toast(uuid, 1, "要删吗", "占了 10 GB");
+    var args = Notifications.ToastCommand(appId, toast);
+    var hasCardId = args.Contains("--card-id") && args.Contains(uuid);
+    var hasRevision = args.Contains("--revision") && args.Contains("1");
+    var hasPublic = args.Contains(toast.Title) && args.Contains(toast.Summary);
+    Console.WriteLine($"[notify] 含 cardID={hasCardId} revision={hasRevision} 公开摘要={hasPublic}（期望全 True）");
+    if (!hasCardId || !hasRevision || !hasPublic) { Console.Error.WriteLine("[notify] FAIL: 通知参数缺少幂等身份或公开摘要"); Environment.Exit(1); }
+
+    // 高风险批准不带 bearer token：命令参数里不得出现 token 字样。
+    if (args.Any(a => a.Contains("token", StringComparison.OrdinalIgnoreCase))) { Console.Error.WriteLine("[notify] FAIL: 通知参数带 token"); Environment.Exit(1); }
+
+    // 用假 toast 命令自检：参数经 ProcessStartInfo.ArgumentList 逐字传递，不经过 shell，
+    // 标题里任何字符（含空格/引号/换行）都是数据，不会被解释成命令。
+    var script = Path.Combine(AppContext.BaseDirectory, "toast-standin.mjs");
+    if (!File.Exists(script)) { Console.Error.WriteLine($"找不到 {script}"); Environment.Exit(1); }
+    var hostile = new Toast(uuid, 1, "标题 with spaces \" quotes", "summary & <not-markup>");
+    var psi = new ProcessStartInfo(node) { RedirectStandardOutput = true, UseShellExecute = false };
+    psi.ArgumentList.Add(script);
+    foreach (var a in Notifications.ToastCommand(appId, hostile)) psi.ArgumentList.Add(a);
+    using var proc = Process.Start(psi) ?? throw new Exception("toast-standin 启动失败");
+    var printed = proc.StandardOutput.ReadToEnd();
+    proc.WaitForExit(5_000);
+    var expected = Notifications.ToastCommand(appId, hostile);
+    var lines = printed.TrimEnd('\n').Split('\n');
+    var intact = lines.Length == expected.Length && lines.Zip(expected).All(p => p.First == p.Second);
+    Console.WriteLine($"[notify] 参数逐字传递 = {intact}（期望 True）");
+    if (!intact) { Console.Error.WriteLine("[notify] FAIL: 参数没逐字传过去"); Environment.Exit(1); }
+
+    // 注册/激活、后台激活、勿扰、Narrator 需要 Windows App SDK 运行时与桌面会话，真机 NOT_RUN。
+    Console.WriteLine("Phase 4 通知骨架 PASS（真实 Toast 注册/激活/勿扰/Narrator：NOT_RUN，需 App SDK + 桌面会话）");
 }
 
 // --- 工具 ---

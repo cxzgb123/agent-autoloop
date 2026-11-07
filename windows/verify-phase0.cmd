@@ -6,8 +6,9 @@ cd /d "%~dp0"
 echo === 构建 WinHost ===
 dotnet build WinHost\WinHost.csproj -c Release || exit /b 1
 
-set OUT=WinHost\bin\Release\net10.0
+set OUT=WinHost\bin\Release\net10.0-windows
 copy /y mock-agent.mjs "%OUT%\mock-agent.mjs" >nul
+copy /y toast-standin.mjs "%OUT%\toast-standin.mjs" >nul
 
 echo.
 echo === 两轮闭环 ===
@@ -22,5 +23,13 @@ echo === Named Pipe 控制面 ===
 dotnet "%OUT%\winhost.dll" pipe || exit /b 1
 
 echo.
-echo Phase 0 全部 PASS
+echo === 管理页/托盘骨架 ===
+dotnet "%OUT%\winhost.dll" tray || exit /b 1
+
+echo.
+echo === 通知骨架 ===
+dotnet "%OUT%\winhost.dll" notify || exit /b 1
+
+echo.
+echo Phase 4 全部 PASS
 endlocal
