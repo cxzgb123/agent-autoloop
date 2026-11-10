@@ -39,6 +39,12 @@ Phase 0 进程树清理 PASS（KILL_ON_JOB_CLOSE + TerminateJobObject）
 3. **Task Scheduler 部署**（文档 15.3）与**通知**（文档 15.2）：本次未实现，只留脚本骨架（`scripts/` 目录，标注 NOT_RUN）。
 4. TS 内核的 Windows 阻塞点（B1–B10）尚未改，typecheck + 全量测试在 Windows 原生环境是否全绿未验证。
 
+## 阶段 5 试点收口的文档与 opt-in 骨架
+
+- `SUPPORT.md`：首发支持 / 真机回归后才标注 / 不列首发 三档支持矩阵（对应方案文档 471 行）。
+- `LIMITATIONS.md`：全项目 NOT_RUN 项的正式用户清单，逐项标注「未验证，不开放正式承诺」。
+- `worker/probe.ts` + `tests/probe.test.ts` + `tests/fixtures/fake-cli.mjs`：能力探测与 realCLI opt-in 门。探测只跑安全参数（版本/帮助），**绝不花 model 费用**；真实 CLI 跑一次花 model 费用，只有用户明确带 `--run` 才算授权。真实 agent 跑一律 NOT_RUN。
+
 ## 本次交付的边界
 
 - 这是**独立的技术尖峰**，不是产品入口；没有接 TS Hub、没有账本、没有对账，`launchID` 只是 `DateTime.UtcNow.Ticks`。
