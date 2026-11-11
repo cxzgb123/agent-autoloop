@@ -8,22 +8,33 @@ import { spawn } from "node:child_process";
 const mode = process.env.MOCK_MODE ?? "normal";
 const run = process.env.MOCK_RUN ?? "0";
 
-const child = spawn(
-  process.execPath,
-  ["-e", mode === "hang" ? "setInterval(() => {}, 1000)" : "console.log('child work done')"],
-  { stdio: "inherit" },
-);
-
-if (mode === "hang") {
-  // 父子都挂住，等 WinHost 用 TerminateJobObject 清树。
+if (mode === "tree") {
+  // 三代进程树：root -> child -> grandchild，全部挂住。孙进程的父是子进程不是 root，
+  // 旧的「父 PID == root」粗证会漏掉它，Job 内精确枚举不会。
+  spawn(
+    process.execPath,
+    ["-e", "require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); setInterval(()=>{},1000)"],
+    { stdio: "ignore" },
+  );
   setInterval(() => {}, 1000);
 } else {
-  child.on("error", (error) => {
-    console.error(`child failed: ${error.message}`);
-    process.exit(2);
-  });
-  child.on("exit", (code) => {
-    console.log(`agent done: run=${run} child exit ${code}`);
-    process.exit(code ?? 0);
-  });
+  const child = spawn(
+    process.execPath,
+    ["-e", mode === "hang" ? "setInterval(() => {}, 1000)" : "console.log('child work done')"],
+    { stdio: "inherit" },
+  );
+
+  if (mode === "hang") {
+    // 父子都挂住，等 WinHost 用 TerminateJobObject 清树。
+    setInterval(() => {}, 1000);
+  } else {
+    child.on("error", (error) => {
+      console.error(`child failed: ${error.message}`);
+      process.exit(2);
+    });
+    child.on("exit", (code) => {
+      console.log(`agent done: run=${run} child exit ${code}`);
+      process.exit(code ?? 0);
+    });
+  }
 }

@@ -8,11 +8,12 @@
 
 | 交付 | 内容 | 对应文档 | 状态 |
 |---|---|---|---|
-| `mock-agent.mjs` | 零依赖假 Agent，normal/hang 两种模式，子进程继承 Job | 文档 16 节 `tests/fixtures/mock-agent.mjs` | 已运行验证 |
-| `WinHost/ProcessSupervisor.cs` | `CreateProcessW(CREATE_SUSPENDED)` → `AssignProcessToJobObject(KILL_ON_JOB_CLOSE)` → `ResumeThread`，任一步失败 fail closed 且回收自己持有的句柄，绝不 taskkill 任意 PID | 文档 8.2 / 8.3 | 已运行验证 |
-| `WinHost/Program.cs` | `rounds`（两轮闭环）/ `hang`（进程树清理）/ `pipe`（Named Pipe 控制面）/ `selftest` 四个动作 | 文档 462 行退出条件 | 已运行验证 |
-| `WinHost/Native.cs` | `NtQueryInformationProcess` 读父 PID（Phase 0 粗证用） | — | 已运行验证 |
-| `WinHost/ControlPipe.cs` | Named Pipe 入口：长度前缀协议、4KB 上限、单连接、方法白名单 `ping`/`status`、管道名带 installUUID、SDDL 拒绝网络/匿名 | 文档 10.1 | 白名单/长度/连接已运行验证 |
+| `mock-agent.mjs` | 零依赖假 Agent，normal/hang/tree 三种模式，子进程继承 Job（tree 是 root→child→grandchild 三代树） | 文档 16 节 `tests/fixtures/mock-agent.mjs` | 已运行验证 |
+| `WinHost/ProcessSupervisor.cs` | `CreateProcessW(CREATE_SUSPENDED)` → `AssignProcessToJobObject(KILL_ON_JOB_CLOSE)` → `ResumeThread`，任一步失败 fail closed 且回收自己持有的句柄，绝不 taskkill 任意 PID；Phase 2 起进程身份 = launchID + 启动时间 + exe 路径指纹，Job 内精确枚举 | 文档 8.2 / 8.3 | 已运行验证 |
+| `WinHost/ExecutionLedger.cs` | 内存执行账本：按 launchID 记启动/退出/失败，区分「还在跑 / 已退 / 启动失败」，同 launchID 只记一棵树 | 文档 9.1 / 12 | 已运行验证 |
+| `WinHost/Program.cs` | `rounds`（两轮闭环）/ `hang`（进程树清理）/ `tree`（Job 内精确枚举三代树）/ `ledger`（身份与账本三态）/ `pipe`（Named Pipe 控制面）/ `selftest` 六个动作 | 文档 462 行退出条件 | 已运行验证 |
+| `WinHost/Native.cs` | `NtQueryInformationProcess` 读父 PID（Phase 0 粗证用，Phase 2 已删除） | — | 已删除 |
+| `WinHost/ControlPipe.cs` | Named Pipe 入口：长度前缀协议、4KB 上限、单连接、方法白名单 `ping`/`status`、管道名带 installUUID；DACL 经 `CreateNamedPipeW` + `SECURITY_ATTRIBUTES` 真实施加到管道对象（读回验证 deny ACE 在对象上），拒绝网络/匿名 | 文档 10.1 | 白名单/长度/连接/DACL 施加已运行验证 |
 
 ## 验证结果
 
@@ -35,12 +36,12 @@ Phase 0 进程树清理 PASS（KILL_ON_JOB_CLOSE + TerminateJobObject）
 ## 明确 NOT_RUN（文档要求、本机无法伪造的项）
 
 1. **runtime 打包的干净 VM 证据**：文档 462 行退出条件要求「runtime 打包方案有干净 Windows 11 VM 证据」，且第 7 节第 4 点强调 `.NET` 部署（framework-dependent / self-contained / MSIX）与 Windows App SDK runtime 必须分别在干净 VM 验证。本机只验证了 framework-dependent（`dotnet winhost.dll` 运行）。**self-contained 打包与干净 VM 安装未做。**
-2. **Named Pipe 的 DACL 实机施加与「非预期身份被拒」**：`ControlPipe.SecuritySddl()` 给出只允许当前用户、拒绝网络/匿名的 SDDL 字符串（含 `(D;;GA;;;NU)` 与 `(D;;GA;;;AN)`），并在 `pipe` selftest 里断言存在。但真正把 DACL 施加到管道需要 `CreateNamedPipeW` 的 P/Invoke 携带 `SECURITY_ATTRIBUTES`，且「非预期身份被拒」必须用第二个 Windows 账号来连；本机只有一个账号，**这两个都记 NOT_RUN**。方法白名单、4KB 长度上限、单连接限制是已运行验证的。
+2. **「非预期身份被拒」实机**：DACL 施加（`CreateNamedPipeW` + `SECURITY_ATTRIBUTES`）已运行验证——读回管道对象 SDDL 确认 `(D;;...;;;NU)` 与 `(D;;...;;;AN)` 两个 Deny ACE 真在对象上，当前用户 `ping` 通过。但「非预期身份被拒」必须用第二个 Windows 账号来连；本机只有一个账号，**这一项记 NOT_RUN，不做伪证**。
 3. **Task Scheduler 部署**（文档 15.3）与**通知**（文档 15.2）：本次未实现，只留脚本骨架（`scripts/` 目录，标注 NOT_RUN）。
 4. TS 内核的 Windows 阻塞点（B1–B10）尚未改，typecheck + 全量测试在 Windows 原生环境是否全绿未验证。
 
 ## 本次交付的边界
 
-- 这是**独立的技术尖峰**，不是产品入口；没有接 TS Hub、没有账本、没有对账，`launchID` 只是 `DateTime.UtcNow.Ticks`。
-- 进程树枚举用父 PID 粗证，Job 内精确枚举（`QueryInformationJobObject`）留到 Phase 2。
+- 这是**独立的技术尖峰**，不是产品入口；没有接 TS Hub，账本是有状态可区分的**内存**切片（持久化与 Hub 重启对账是后续阶段），`launchID` 仍是 `DateTime.UtcNow.Ticks`。
+- 进程树枚举在 Phase 2 已从父 PID 粗证换成 Job 内精确枚举（`QueryInformationJobObject` / `JobObjectBasicProcessIdList`），三代进程树不漏孙进程（`winhost tree` 验证）。
 - 没有引入任何 Windows 服务、注册表、Task Scheduler、通知注册，也不改动上游 TS 源码或账号配置。
