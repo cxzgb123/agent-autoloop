@@ -39,18 +39,17 @@ export function deadlines(view: View, now: number) {
   for (const schedule of rows(view, "schedules")) {
     if (scheduled(schedule.rule)) add("cron", schedule.rule, Date.parse(schedule.next_at));
   }
-  for (const timer of rows(view, "timers", { event_id: null })) {
-    if (timer.event_id === null) add("later", String(timer.id), Date.parse(timer.at));
+  for (const pause of rows(view, "pauses")) {
+    if (pause.until !== null) add("pause", pause.name, Date.parse(pause.until));
   }
+  for (const timer of rows(view, "timers", { event_id: null })) add("later", String(timer.id), Date.parse(timer.at));
   for (const run of rows(view, "runs", { state: "queued" })) {
     const notBefore = Date.parse(run.not_before);
-    if (run.state === "queued" && notBefore > now) add("retry", String(run.id), notBefore);
+    if (notBefore > now) add("retry", String(run.id), notBefore);
   }
   for (const delivery of rows(view, "deliveries", { given_up: 0, not_before: { not: null } })) {
     const notBefore = Date.parse(delivery.not_before);
-    if (!delivery.given_up && delivery.not_before && notBefore > now) {
-      add("delivery", `${delivery.card_id}:${delivery.channel}`, notBefore);
-    }
+    if (notBefore > now) add("delivery", `${delivery.card_id}:${delivery.channel}`, notBefore);
   }
   for (const worker of workers(view)) {
     const seen = view.get("seen", `worker:${worker}`);

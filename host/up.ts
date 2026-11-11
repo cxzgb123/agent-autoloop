@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { loadChannel } from "./channels.ts";
-import { parseListen, readConfig, type ChannelConfig } from "./config.ts";
+import { cantListen, parseListen, readConfig, type ChannelConfig } from "./config.ts";
 import { HOME } from "./home.ts";
 import { runningUp } from "./service.ts";
 import { commitOf } from "./version.ts";
@@ -16,7 +16,8 @@ const log = (who: string) => (line: string) => console.log(`${new Date().toISOSt
 /** Only one of these per install: a second would take work beside the first. */
 function lock() {
   const running = runningUp();
-  if (running !== null) throw new Error(`已经在跑了（进程 ${running}）`);
+  // Its own number is what was left behind: pid 1 every time in a container, and a matter of luck after a restart.
+  if (running !== null && running !== process.pid) throw new Error(`已经在跑了（进程 ${running}）`);
   const file = path.join(HOME, "up.pid");
   writeFileSync(file, String(process.pid));
   return () => {
@@ -84,7 +85,7 @@ export async function up() {
     const server = serve(port, host, { commit: commitOf() });
     server.on("listening", () => say(`listening on ${config.hub!.listen}`));
     server.on("error", (error) => {
-      say(`can't listen: ${error}`);
+      say(cantListen(error));
       process.exit(1);
     });
     close = () => {

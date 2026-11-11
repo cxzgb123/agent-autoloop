@@ -254,7 +254,7 @@ test("a rules file already there stays as it was, and no channel is added beside
 
 test("doctor says what reaches you: only this computer, or nothing yet, or no word of either", async () => {
   const { serve } = await import("../host/http.ts");
-  const hub = await import("../host/runtime.ts");
+  const hub = await import("./hub.ts");
   const server = serve(0);
   await new Promise((resolve) => server.once("listening", resolve));
   writeFileSync(

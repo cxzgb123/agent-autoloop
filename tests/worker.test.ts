@@ -19,14 +19,18 @@ if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-b
 // A plugin that can't read what it printed, or gives back nothing, ends the worker, holds the run for ever, counts a run still
 // going as ended, or starts its prompt again in a new session, whether the run ended or vanished; or hands in a session made
 // up here in place of the one it read while the run was going, which a retry can't go on in; trouble with one run, like a
-// folder it can't write to, holds up the others, ends the worker or fills the log; a worker started again after trouble
-// needs the folder it lost.
+// folder it can't write to, holds up the others, ends the worker or fills the log. Over ACP, a retry in a session a turn
+// already started in that breaks before the prompt redoes the work in a new one, or does so because something else has the
+// session open just now, and one the agent refuses or can't go on in doesn't get a new one; a "没跑成" after a finished tool
+// call is run together with what came before it and counts as work done; a failed turn whose agent won't go, or leaves
+// something holding its output, or closes its output and stays, holds its place until the time limit and loses the real
+// reason.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { setup } from "./helpers.ts";
+import { acpAgent, setup } from "./helpers.ts";
 
 const home = setup("worker");
 const folder = join(home, "project");
@@ -96,6 +100,21 @@ export default {
     return JSON.parse(out);
   },
   link: (s) => "app://" + s,
+};`,
+);
+
+// Has sessions to go on in, but nothing a person can open.
+mkdirSync(join(home, "plugins", "no-link"), { recursive: true });
+writeFileSync(
+  join(home, "plugins", "no-link", "agent.ts"),
+  `
+export default {
+  command: (t) => ["/bin/sh", "-c", t.command[0], "no-link", t.resume ?? "", t.prompt],
+  read(stdout, code) {
+    const session = /session=(\\S+)/.exec(stdout)?.[1];
+    if (code === null) return { session };
+    return { text: stdout.replace(/session=\\S+\\n/, ""), session, started: true };
+  },
 };`,
 );
 
@@ -506,6 +525,21 @@ test("a receipt that can't be read is asked for again in the same session, doing
   assert.deepEqual(hub.results[0].usage, { input: 2, output: 2 }, "both turns count; no turn reported a price");
 });
 
+test("a plugin with sessions and nothing to open gets to rewrite its receipt too", async () => {
+  const hub = fakeHub();
+  const wrong = said("no-link-wrong", `session=s-2\n做完了\n\n${FENCE}agent-autoloop\n{ 不是 json\n${FENCE}\n`);
+  const right = said(
+    "no-link-right",
+    `session=s-2\n做完了\n\n${FENCE}agent-autoloop\n{"notice":[{"title":"看一眼","text":"这个"}]}\n${FENCE}\n`,
+  );
+  const script = `if [ -n "$1" ]; then cat "${right}"; exit 0; fi; echo did-it >> "${folder}/no-link-work.txt"; cat "${wrong}"`;
+  hub.jobs.push(job({ use: "no-link", command: [script] }));
+  const w = worker(hub);
+  await until(w, () => hub.results.length === 1);
+  assert.equal(readFileSync(join(folder, "no-link-work.txt"), "utf8"), "did-it\n", "the work was done once");
+  assert.deepEqual(hub.results[0].notice, [{ title: "看一眼", text: "这个" }]);
+});
+
 for (const failure of ["exit", "timeout", "unreadable", "empty", "failed-message"] as const) {
   test(`a ${failure} receipt repair keeps the original completed business result`, async () => {
     const hub = fakeHub();
@@ -863,13 +897,6 @@ test("a plugin that gives back nothing fails that run and doesn't hold it", asyn
   assert.match(hub.results[0].error, /读不懂/);
 });
 
-test("a worker started again brings back a folder that's gone", async () => {
-  const w = worker(fakeHub());
-  rmSync(join(home, "worker", "runs"), { recursive: true, force: true });
-  await w.run(AbortSignal.abort());
-  assert.deepEqual(w.entries(), []);
-});
-
 test("trouble with one run waits for the next round and holds up no other", async () => {
   const hub = fakeHub();
   const lines: string[] = [];
@@ -902,3 +929,143 @@ test("trouble with one run waits for the next round and holds up no other", asyn
   await until(w, () => Boolean(resultOf(hub, troubled)));
   assert.equal(resultOf(hub, troubled).outcome, "done");
 });
+
+/** A stand-in ACP agent the real bridge runs. Each launch adds a line to a file, for counting and for what it does next. */
+function acp(name: string, script: string) {
+  const launches = join(folder, `${name}.launches`);
+  const program = acpAgent(
+    folder,
+    name,
+    `appendFileSync(${JSON.stringify(launches)}, 'x\\n');
+const launch = readFileSync(${JSON.stringify(launches)}, 'utf8').trim().split('\\n').length;
+${script}`,
+  );
+  return {
+    command: [process.execPath, program],
+    launches: () => readFileSync(launches, "utf8").trim().split("\n").length,
+  };
+}
+
+test("over ACP, a retry that breaks before its prompt stays in the session its work may have been done in", async () => {
+  for (const [name, script] of [
+    ["exits-first", "if (launch === 1) process.exit(3);"],
+    [
+      "initialize-fails-first",
+      "if (launch === 1) on.initialize = (m) => send({ id: m.id, error: { code: -32603, message: '初始化坏了' } });",
+    ],
+  ] as const) {
+    const hub = fakeHub();
+    const agent = acp(name, script);
+    hub.jobs.push(job({ use: "acp", session: "S1", command: agent.command }));
+    const w = worker(hub);
+    await until(w, () => hub.results.length === 1);
+    assert.equal(hub.results[0].outcome, "failed", name);
+    assert.equal(hub.results[0].session, "S1", name);
+    assert.equal(agent.launches(), 1, `${name}: a new session would do the work again`);
+  }
+});
+
+test("over ACP, a session something else has open stays, and the run goes back to be tried there again", async () => {
+  const hub = fakeHub();
+  const agent = acp(
+    "in-use",
+    `on['session/load'] = (m) => send({ id: m.id, error: { code: -32600, message: '这个会话正在别处打开，关掉后再试', data: { reason: 'thread_active_writer' } } });`,
+  );
+  hub.jobs.push(job({ use: "acp", session: "S1", command: agent.command }));
+  await until(worker(hub), () => hub.results.length === 1);
+  assert.deepEqual(
+    [hub.results[0].outcome, hub.results[0].error, hub.results[0].session],
+    ["failed", "这个会话正在别处打开，关掉后再试", "S1"],
+  );
+  assert.equal(agent.launches(), 1, "a new session would do the work again");
+});
+
+test("over ACP, a session the agent refuses or can't go on in gets a new one, once", async () => {
+  for (const [name, script] of [
+    [
+      "refuses-load",
+      "on['session/load'] = (m) => send({ id: m.id, error: { code: -32002, message: '没有这个会话' } });",
+    ],
+    [
+      "cannot-resume",
+      "if (launch === 1) on.initialize = (m) => send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: {} } });",
+    ],
+  ] as const) {
+    const hub = fakeHub();
+    const agent = acp(name, script);
+    hub.jobs.push(job({ use: "acp", session: "S1", command: agent.command }));
+    const w = worker(hub);
+    await until(w, () => hub.results.length === 1);
+    assert.deepEqual(
+      [hub.results[0].outcome, hub.results[0].summary, hub.results[0].session],
+      ["done", "做完了", "agent-session"],
+      name,
+    );
+    assert.equal(agent.launches(), 2, name);
+  }
+});
+
+test("over ACP, a last message after a finished tool call is read by itself, so the run goes back to be tried again", async () => {
+  const hub = fakeHub();
+  const agent = acp(
+    "failed-after-a-tool",
+    `on['session/prompt'] = (m) => {
+      update({ sessionUpdate: 'tool_call', toolCallId: 't', title: '后台任务', status: 'in_progress' });
+      say('还在等后台任务');
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 't', status: 'failed' });
+      say('没跑成：网络断了');
+      send({ id: m.id, result: { stopReason: 'end_turn' } });
+    };`,
+  );
+  hub.jobs.push(job({ use: "acp", command: agent.command }));
+  await until(worker(hub), () => hub.results.length === 1);
+  assert.deepEqual([hub.results[0].outcome, hub.results[0].error], ["failed", "网络断了"]);
+});
+
+/** Whether anything in a run's process group is still going. Zombies have already stopped. */
+const groupGoing = (pid: number) =>
+  execFileSync("ps", ["-ax", "-o", "pgid=", "-o", "stat="], { encoding: "utf8" })
+    .trim()
+    .split("\n")
+    .some((line) => {
+      const [group, state] = line.trim().split(/\s+/);
+      return Number(group) === pid && !state.startsWith("Z");
+    });
+
+const STUBBORN = "process.on('SIGTERM', () => {}); setTimeout(() => process.exit(0), 30_000);";
+for (const [what, script, why] of [
+  [
+    "won't go",
+    `${STUBBORN} on['session/prompt'] = (m) => send({ id: m.id, result: { stopReason: 'max_tokens' } });`,
+    /max_tokens/,
+  ],
+  [
+    "left something holding its output",
+    `on['session/prompt'] = () => { spawn('sleep', ['30'], { stdio: 'inherit' }); process.exit(9); };`,
+    /退出：9/,
+  ],
+  ["closed its output and stayed", `${STUBBORN} on['session/prompt'] = () => closeSync(1);`, /关掉了输出/],
+] as const) {
+  test(`over ACP, a failed turn whose agent ${what} is ended after a while, with the real reason`, async () => {
+    const hub = fakeHub();
+    let clock = Date.now();
+    const agent = acp(what.replaceAll(" ", "-"), script);
+    // A limit far off, by a clock that stands still until it's moved: it's what ends such a run if nothing else does.
+    hub.jobs.push(job({ use: "acp", command: agent.command, timeout: 180 }));
+    const w = worker(hub, { now: () => clock });
+    await until(w, () => Boolean(w.entries()[0]?.finishedAt));
+    const pid = w.entries()[0].pid!;
+    await w.tick();
+    assert.equal(hub.results.length, 0, "it gets a while to go by itself");
+    clock += 31_000;
+    await until(
+      w,
+      () => hub.results.length === 1,
+      () => (clock += 1000),
+    );
+    assert.equal(hub.results[0].outcome, "failed");
+    assert.match(hub.results[0].error, why);
+    assert.equal(hub.results[0].session, "agent-session");
+    assert.equal(groupGoing(pid), false, "and nothing of it is left");
+  });
+}

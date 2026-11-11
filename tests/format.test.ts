@@ -65,10 +65,10 @@ test("a start with nothing changed keeps the format it stored", () => {
 test("what doesn't decide what's stored can change without a rebuild", () => {
   const usual = start();
   for (const [file, before, after] of [
-    ["host/runtime.ts", "export const ruleNamed", "// a comment\nexport const ruleNamed"],
+    ["host/runtime.ts", "export const listKeys", "// a comment\nexport const listKeys"],
     ["host/runtime.ts", "const { problem } = reloadRules();", 'const { problem } = reloadRules(); void "other work";'],
     ["kernel/decide.ts", "const MAX_ATTEMPTS = 10;", "const MAX_ATTEMPTS = 11;"],
-    ["kernel/schema.sql", "  usage TEXT\n", "  usage TEXT,\n  extra TEXT\n"],
+    ["host/state.ts", 'summary error usage"', 'summary error usage extra"'],
   ] as const) {
     assert.equal(formatWith(file, before, after), usual, `${file}: ${after}`);
   }
@@ -112,9 +112,9 @@ test("what decides what's stored brings a rebuild", () => {
 
 test("a change to the read-only views shows at the next start, with no rebuild", () => {
   const usual = start();
-  const path = join(code, "kernel", "schema.sql");
+  const path = join(code, "host", "state.ts");
   const original = readFileSync(path, "utf8");
-  writeFileSync(path, original.replace("  usage TEXT\n", "  usage TEXT,\n  rules_version INTEGER\n"));
+  writeFileSync(path, original.replace('summary error usage"', 'summary error usage rules_version"'));
   try {
     assert.equal(start(), usual);
     const db = new DatabaseSync(join(home, "hub.db"), { readOnly: true });

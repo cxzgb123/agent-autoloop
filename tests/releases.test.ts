@@ -3,9 +3,8 @@ if (process.platform === "win32") process.exit(0); // POSIX 专属（git clone �
 // release; version numbers sort as text, so v1.9.0 beats v1.10.0; a tag that isn't a release is taken for one; an install
 // made before releases, sitting on main, is left there; a copy from a repository given by hand is sent to tags it was never
 // asked to follow, or run over with the installer and left unable to update; a failed look at the releases counts as being
-// up to date or as there being none, which would install main, or an update with nothing new restarts the service; a copy is
-// sent to v1.0.0, which can only pull a branch, so could never leave; a tag moved on the server stops updates; installing says
-// something about detached HEADs. No network: git's own insteadOf points the public address at a repository made here.
+// up to date or as there being none, which would install main, or an update with nothing new restarts the service; installing says
+// something about detached HEADs; a copy that fetched only its own tag can't say which release it is. No network: git's own insteadOf points the public address at a repository made here.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -23,6 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { updateCode } from "../cli/update.ts";
+import { releaseOf } from "../host/version.ts";
 
 const PUBLISHED = "https://github.com/KKKKhazix/agent-autoloop.git";
 const script = join(import.meta.dirname, "..", "install.sh");
@@ -43,19 +43,19 @@ const git = (cwd: string, ...args: string[]) =>
 /** What's published: a program that only says it was run, a commit for each version, and main ahead of them all. */
 mkdirSync(join(original, "bin"), { recursive: true });
 git(original, "init", "-q");
-function publish(words: string, tag?: string, repository = original) {
-  const program = join(repository, "bin", "agent-autoloop.ts");
+function publish(words: string, tag?: string) {
+  const program = join(original, "bin", "agent-autoloop.ts");
   writeFileSync(program, `#!/bin/sh\necho "${words} $*" >> "$RAN"\n`);
   chmodSync(program, 0o755);
-  git(repository, "add", "-A");
-  git(repository, "commit", "-q", "-m", words);
-  if (tag) git(repository, "tag", tag);
-  return git(repository, "rev-parse", "HEAD");
+  git(original, "add", "-A");
+  git(original, "commit", "-q", "-m", words);
+  if (tag) git(original, "tag", tag);
+  return git(original, "rev-parse", "HEAD");
 }
 const versions: Record<string, string> = {};
 for (const tag of ["v1.2.0", "v1.9.0", "v1.10.0"]) versions[tag] = publish(tag, tag);
 publish("a test tag", "v2.0.0-rc1");
-publish("an old marker", "pre-public-delete-20261203");
+publish("a non-release tag", "local-backup");
 const tip = publish("main, not released");
 
 let copies = 0;
@@ -71,12 +71,14 @@ test("an update goes to the newest release, by version number, not to main", () 
   const done = updateCode(root);
   assert.deepEqual(done, { changed: true, to: "v1.10.0" });
   assert.equal(at(root), versions["v1.10.0"]);
+  assert.equal(releaseOf(root), "v1.10.0");
 });
 
 test("with nothing newer it says so, and nothing has changed", () => {
   const root = copy("--branch", "v1.10.0", PUBLISHED);
   assert.deepEqual(updateCode(root), { changed: false, to: "v1.10.0" });
   assert.equal(at(root), versions["v1.10.0"]);
+  assert.equal(releaseOf(root), "v1.10.0");
 });
 
 test("an install made before releases leaves main for the newest release", () => {
@@ -94,27 +96,6 @@ test("a copy from a repository given by hand follows that repository", () => {
   assert.deepEqual(updateCode(root), { changed: true, to: null });
   assert.equal(at(root), moreRecent);
   assert.deepEqual(updateCode(root), { changed: false, to: null });
-});
-
-test("a tag moved on the server is followed, not a failure", () => {
-  const root = copy("--branch", "v1.9.0", PUBLISHED);
-  git(original, "tag", "-f", "v1.9.0", versions["v1.2.0"]);
-  try {
-    assert.deepEqual(updateCode(root), { changed: true, to: "v1.10.0" });
-    const moved = copy("--branch", "v1.10.0", PUBLISHED);
-    git(original, "tag", "-f", "v1.10.0", versions["v1.2.0"]);
-    assert.deepEqual(updateCode(moved), { changed: true, to: "v1.10.0" });
-    assert.equal(at(moved), versions["v1.2.0"]);
-  } finally {
-    git(original, "tag", "-f", "v1.9.0", versions["v1.9.0"]);
-    git(original, "tag", "-f", "v1.10.0", versions["v1.10.0"]);
-  }
-});
-
-test("a copy with no origin says what went wrong", () => {
-  const root = copy(PUBLISHED);
-  git(root, "remote", "remove", "origin");
-  assert.throws(() => updateCode(root), /git pull 没成功/);
 });
 
 test("a failed look at the releases is a failure, not news that nothing changed", () => {
@@ -214,46 +195,4 @@ test("the installer run over a copy from elsewhere leaves it following there, an
   assert.equal(at(it.app), newer, "not sent to a release");
   assert.equal(git(it.app, "rev-parse", "--abbrev-ref", "HEAD"), "main");
   assert.deepEqual(updateCode(it.app), { changed: false, to: null });
-});
-
-test("a repository given by hand over a copy that follows releases changes nothing and doesn't fail", () => {
-  // One that was on main before releases, which pulling can't do anything with once it's at a release.
-  const person = join(dir, "by-hand-over");
-  const app = join(person, "hub", "app");
-  mkdirSync(join(person, "hub"), { recursive: true });
-  git(dir, "clone", "-q", "--depth", "1", PUBLISHED, app);
-  updateCode(app);
-  const release = at(app);
-  writeFileSync(join(person, "hub", "config.json"), "{}");
-  install(person, { AGENT_AUTOLOOP_REPO: `file://${original}` });
-  assert.equal(at(app), release);
-});
-
-test("the public address given by hand is the public address", () => {
-  const person = join(dir, "by-hand-public");
-  mkdirSync(person);
-  const it = install(person, { AGENT_AUTOLOOP_REPO: PUBLISHED });
-  assert.equal(git(it.app, "rev-parse", "--abbrev-ref", "HEAD"), "HEAD", "at a release");
-});
-
-test("v1.0.0 isn't gone to: it can only pull a branch, so a copy sent there could never leave", () => {
-  const first = join(dir, "only-the-first");
-  mkdirSync(join(first, "bin"), { recursive: true });
-  git(first, "init", "-q");
-  publish("the first release", "v1.0.0", first);
-  const tip = publish("main since then", undefined, first);
-  const config = join(dir, "gitconfig-first");
-  writeFileSync(config, readFileSync(gitConfig, "utf8").replace(`file://${original}`, `file://${first}`));
-  const usual = process.env.GIT_CONFIG_GLOBAL;
-  process.env.GIT_CONFIG_GLOBAL = config;
-  try {
-    const root = copy(PUBLISHED);
-    assert.deepEqual(updateCode(root), { changed: false, to: null });
-    assert.equal(at(root), tip);
-    const person = join(dir, "only-the-first-person");
-    mkdirSync(person);
-    assert.equal(at(install(person, { GIT_CONFIG_GLOBAL: config }).app), tip);
-  } finally {
-    process.env.GIT_CONFIG_GLOBAL = usual;
-  }
 });

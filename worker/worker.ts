@@ -2,7 +2,7 @@
 // job. An agent runs detached, in its own process group, writing to files, so the worker can stop and come back and
 // find it still going, or finished. A job is saved before anything slow happens; a result is saved before it's handed
 // in and stays until the hub has taken it.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -18,15 +18,16 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { HubError, type Hub } from "../protocol/client.ts";
 import { HOME } from "../host/home.ts";
-import { alive, expandHome, groupAlive, launch as launchProcess, signal } from "../host/platform.ts";
+import { commandLine, processCommand } from "../host/command.ts";
 import type { Job } from "../protocol/job.ts";
 import { addUsage, type Notice, type Result } from "../protocol/validate.ts";
 import { adapterFor, type Adapter, type Reading, type Turn, type Usage } from "./agents.ts";
 import { promptFor, readMessage, repairPrompt, resultFrom } from "./contract.ts";
-import { forgetOldUsage, loadUsage, saveUsage, usageDelta } from "./usage.ts";
+import { loadUsage, saveUsage, usageDelta } from "./usage.ts";
 
 const RUNS = path.join(HOME, "worker", "runs");
 const NOTHING: Usage = { input: 0, output: 0, cached: 0, cost: 0 };
@@ -113,9 +114,56 @@ const files = (entry: Entry) => ({
   out: path.join(entry.dir, `stdout-${entry.turn}.log`),
   err: path.join(entry.dir, `stderr-${entry.turn}.log`),
   exit: path.join(entry.dir, `exit-${entry.turn}`),
-  command: path.join(entry.dir, `command-${entry.turn}.sh`),
+  command: path.join(entry.dir, `command-${entry.turn}.${process.platform === "win32" ? "json" : "sh"}`),
 });
+const quoted = (word: string) => `'${word.replaceAll("'", `'\\''`)}'`;
 const marker = (entry: Entry) => `agent-autoloop-run:${entry.run}:${entry.attempt}:${entry.turn}`;
+
+/** Whether the run's process is still going: false when it is gone, null when we could not look. */
+async function alive(entry: Entry): Promise<boolean | null> {
+  if (!entry.pid) return false;
+  try {
+    const command = await processCommand(entry.pid);
+    return command.includes(marker(entry));
+  } catch (error) {
+    // A process that is gone makes ps exit with status 1; anything else (EPERM, EACCES, a spawn
+    // failure) means we could not look, which is not the same as it being gone.
+    const status = (error as { code?: unknown }).code;
+    if (process.platform !== "win32" && status === 1) return false;
+    return null;
+  }
+}
+
+function signal(entry: Entry, name: NodeJS.Signals) {
+  try {
+    if (entry.pid) process.kill(process.platform === "win32" ? entry.pid : -entry.pid, name);
+  } catch {}
+}
+
+/** Whether anything in the run's group is still going, null when we could not look. */
+async function groupAlive(entry: Entry): Promise<boolean | null> {
+  // The wrapper can die before a child; zombies have already stopped and only their parent can reap them.
+  if (!entry.pid) return false;
+  if (process.platform === "win32") return alive(entry);
+  try {
+    return execFileSync("ps", ["-ax", "-o", "pgid=", "-o", "stat="], { encoding: "utf8" })
+      .trim()
+      .split("\n")
+      .some((line) => {
+        const [group, state] = line.trim().split(/\s+/);
+        return Number(group) === entry.pid && !state.startsWith("Z");
+      });
+  } catch {
+    // ps itself may be missing or blocked in a sandbox. This group was started here, so it can be asked about
+    // directly: no such group is gone, anything else means it couldn't be looked at.
+    try {
+      process.kill(-entry.pid, 0);
+      return true;
+    } catch (failure) {
+      return (failure as NodeJS.ErrnoException).code === "ESRCH" ? false : null;
+    }
+  }
+}
 
 function snapshot(file: string) {
   if (!existsSync(file)) return "";
@@ -176,7 +224,7 @@ export function createWorker({
     delete entry.why;
     save(entry);
     const { rule, agent } = entry.job;
-    const cwd = expandHome(rule.cwd);
+    const cwd = rule.cwd.replace(/^~(?=[/\\])/, homedir());
     const turn: Turn = {
       prompt,
       session: entry.session,
@@ -184,18 +232,78 @@ export function createWorker({
       cwd,
       model: agent.model,
       effort: agent.effort,
+      tier: agent.tier,
       access: agent.access as Turn["access"],
       command: agent.command,
+      program: agent.program,
       contextFile: path.join(entry.dir, "context.json"),
       folder: entry.dir,
     };
     if (!existsSync(cwd)) throw new Error(`在 ${cwd} 启动不了：这个目录不存在`);
     const argv = adapter.command(turn);
     const { out, err, exit, command } = files(entry);
-    const pid = launchProcess(argv, cwd, agentEnvironment(entry), { out, err, exit, command }, marker(entry));
-    entry.pid = pid;
+    if (process.platform === "win32") {
+      writeFileSync(command, JSON.stringify({ argv, cwd, exit }), { mode: 0o600 });
+      const output = openSync(out, "w");
+      const errors = openSync(err, "w");
+      try {
+        const child = spawn(
+          process.execPath,
+          [
+            "--disable-warning=ExperimentalWarning",
+            path.join(import.meta.dirname, "run.ts"),
+            "--supervise",
+            command,
+            marker(entry),
+          ],
+          {
+            cwd,
+            env: { ...agentEnvironment(entry), AGENT_AUTOLOOP_NODE: process.execPath },
+            detached: true,
+            windowsHide: true,
+            stdio: ["ignore", output, errors],
+          },
+        );
+        child.on("error", (error) => log(`run ${entry.run}: ${error}`));
+        child.unref();
+        entry.pid = child.pid;
+      } finally {
+        closeSync(output);
+        closeSync(errors);
+      }
+      save(entry);
+      log(`run ${entry.run} (${rule.name}) turn ${entry.turn} started, pid ${entry.pid}`);
+      return;
+    }
+    // Login shells don't agree on how a command reads its arguments (fish has no $0 or $@), so the command waits in a
+    // file for /bin/sh. Its path travels by environment because the install path can hold any character.
+    writeFileSync(command, `unset AGENT_AUTOLOOP_COMMAND\nexec ${argv.map(quoted).join(" ")}\n`, { mode: 0o600 });
+    // Output and the exit code go through the shell, so they land in their files even if this program has gone by then.
+    const script = [
+      "out=$1",
+      "err=$2",
+      "result=$3",
+      "shift 3",
+      "umask 077",
+      '"$@" >"$out" 2>"$err"',
+      'echo $? >"$result.tmp"',
+      'mv "$result.tmp" "$result"',
+      // A final external command can replace the shell before publishing its exit file.
+      ":",
+    ].join("\n");
+    // The login shell gives it the PATH and sign-in its owner has in a terminal; launchd and systemd give neither.
+    const login = [process.env.SHELL ?? "/bin/sh", "-lc", 'exec /bin/sh "$AGENT_AUTOLOOP_COMMAND"'];
+    const child = spawn("/bin/sh", ["-c", script, marker(entry), out, err, exit, ...login], {
+      cwd,
+      env: { ...agentEnvironment(entry), AGENT_AUTOLOOP_COMMAND: command },
+      detached: true,
+      stdio: "ignore",
+    });
+    child.on("error", (error) => log(`run ${entry.run}: ${error}`));
+    child.unref();
+    entry.pid = child.pid;
     save(entry);
-    log(`run ${entry.run} (${rule.name}) turn ${entry.turn} started, pid ${pid}`);
+    log(`run ${entry.run} (${rule.name}) turn ${entry.turn} started, pid ${child.pid}`);
   }
 
   function endWith(entry: Entry, result: Result) {
@@ -299,7 +407,7 @@ export function createWorker({
     if (entry.repairs && !problem && result.outcome === "failed") return discardReceipt(entry, adapter, result.error!);
     if (!problem) return endWith(entry, result);
     // Its work is done and only the receipt is wrong: it writes the receipt again, and does nothing again.
-    if (adapter.link && entry.repairs < REPAIRS && seen.session) {
+    if (entry.repairs < REPAIRS && seen.session) {
       log(`run ${entry.run}: receipt not readable (${problem}); asking again`);
       entry.repairs += 1;
       entry.resume = seen.session;
@@ -335,24 +443,35 @@ export function createWorker({
       }
     }
     const { exit } = files(entry);
+    const exitCode = () => (existsSync(exit) ? Number(readFileSync(exit, "utf8").trim()) : null);
     if (entry.stopping !== undefined) {
-      const going = groupAlive(entry.pid);
-      if (going !== false) {
-        const overdue = now() - entry.stopping > STOP_GRACE;
-        if (overdue) signal(entry.pid, "SIGKILL");
-        // Unable to look, the kill is the last we can know of it; waiting to see it gone would hold the run forever.
-        if (going || !overdue) return;
+      const going = await groupAlive(entry);
+      const overdue = now() - entry.stopping > STOP_GRACE;
+      if (going === true) {
+        if (overdue) signal(entry, "SIGKILL");
+        return;
       }
-      return conclude(entry, adapter, existsSync(exit) ? Number(readFileSync(exit, "utf8").trim()) : null);
+      if (going === null) {
+        // The forced kill is the last thing that can be done to it, and whether it worked can't be seen.
+        if (!overdue) return;
+        signal(entry, "SIGKILL");
+        // A turn that was over, or a timeout, ends on what it said: `failed` there is tried again, redoing work done.
+        if (entry.why !== "cancel") return conclude(entry, adapter, exitCode());
+        // Reporting `cancelled` would release the item while a process may still be in it, which the protocol forbids
+        // (docs/protocol.md: 确认组内没有活进程后才交 cancelled). A cancelled run's `failed` isn't tried again.
+        return endWith(entry, {
+          outcome: "failed",
+          error: "停止信号发出后没能确认进程组已结束：这一轮按没跑成记，不再重试，进程可能还在。",
+        });
+      }
+      return conclude(entry, adapter, exitCode());
     }
-    if (existsSync(exit)) return conclude(entry, adapter, Number(readFileSync(exit, "utf8").trim()));
+    if (existsSync(exit)) return conclude(entry, adapter, exitCode());
     // The shell can publish its exit between the first file check and ps returning.
-    const looking = alive(entry.pid, marker(entry));
-    if (looking === false) {
-      return conclude(entry, adapter, existsSync(exit) ? Number(readFileSync(exit, "utf8").trim()) : null);
-    }
+    const looking = await alive(entry);
+    if (looking === false) return conclude(entry, adapter, exitCode());
     // Unable to look, the run counts as still going, so its timeout and its finished turn still end it.
-    if (looking === null && !blind) log(`couldn't run ps; runs count as going until they end or time out`);
+    if (looking === null && !blind) log(`couldn't inspect processes; runs count as going until they end or time out`);
     blind = looking === null;
     const seen = read(entry, adapter, null);
     // Kept as soon as it's read: if the end can't be read, the one made up at launch may be nothing its CLI knows of.
@@ -384,12 +503,12 @@ export function createWorker({
     }
   }
 
-  function stop(entry: Entry, why: "cancel" | "timeout" | "finished") {
+  function stop(entry: Entry, why: NonNullable<Entry["why"]>) {
     if (entry.stopping !== undefined || entry.result) return;
     entry.stopping = now();
     entry.why = why;
     save(entry);
-    signal(entry.pid, "SIGTERM");
+    signal(entry, "SIGTERM");
     log(`run ${entry.run}: stopping (${why})`);
   }
 
@@ -422,13 +541,9 @@ export function createWorker({
     tries += 1;
     const minutes = Math.floor((moment - unreachableSince) / 60_000);
     const text = `${name} 连不上中台已经 ${minutes} 分钟了，派给它的活暂时没人接；它还在一直重试。`;
-    const [program, ...args] = unreachable;
+    const [program, args] = commandLine(unreachable.map((part) => part.replaceAll("{text}", text)));
     try {
-      execFileSync(
-        program,
-        args.map((part) => part.replaceAll("{text}", text)),
-        { timeout: 60_000, stdio: "ignore" },
-      );
+      execFileSync(program, args, { timeout: 60_000, stdio: "ignore" });
       told = true;
     } catch (error) {
       log(`couldn't tell anyone the hub is gone: ${error}`);
@@ -491,17 +606,10 @@ export function createWorker({
         sayOnce(`couldn't clear ${dir}: ${error}`);
       }
     }
-    try {
-      forgetOldUsage(moment);
-    } catch (error) {
-      sayOnce(`couldn't clear old session totals: ${error}`);
-    }
   }
 
   async function run(signalled: AbortSignal) {
     log(`worker ${name} started`);
-    // Started again after trouble, it may be what went: nothing else would bring it back, and every round needs it.
-    mkdirSync(RUNS, { recursive: true, mode: 0o700 });
     while (!signalled.aborted) {
       if (!(await tick())) await new Promise((resolve) => setTimeout(resolve, PAUSE));
     }

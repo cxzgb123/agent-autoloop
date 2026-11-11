@@ -6,6 +6,7 @@ if (process.platform === "win32") process.exit(0); // POSIX-shell/symlink/exec-b
 // step says `try` when nothing has been started; it asks for sudo; the Node advice can't be followed as written, leaving out
 // that Homebrew's node@24 isn't on PATH; running it again redoes the setup, or installs a service after --no-service.
 // A normal umask or a pre-existing directory must not expose the database, event text or worker output to other users.
+// A computer that only takes work can't join, because the installer has set a hub up on it first.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
@@ -95,6 +96,23 @@ test("installation keeps data private even when its root already exists with mod
   const done = it.run([it.local]);
   assert.equal(done.status, 0, done.stderr + done.stdout);
   assert.equal(statSync(it.hub).mode & 0o777, 0o700);
+});
+
+test("a computer that only takes work joins through the installer, with nothing of a hub set up on it", () => {
+  const it = computer();
+  const done = it.run([it.local], ["join", "https://hub.test", "--worker", "mac", "--key", "k", "--no-service"]);
+  assert.equal(done.status, 0, done.stderr + done.stdout);
+  assert.deepEqual(JSON.parse(readFileSync(join(it.hub, "config.json"), "utf8")), {
+    url: "https://hub.test",
+    worker: { name: "mac", key: "k" },
+  });
+  assert.match(done.stdout, /接活/);
+  assert.equal(readlinkSync(join(it.local, "agent-autoloop")), it.program);
+  // A second try, with the key corrected, must say it did nothing rather than that it updated.
+  const again = it.run([it.local], ["join", "https://hub.test", "--worker", "mac", "--key", "other", "--no-service"]);
+  assert.notEqual(again.status, 0);
+  assert.match(again.stderr, /已经配置过了/);
+  assert.equal(JSON.parse(readFileSync(join(it.hub, "config.json"), "utf8")).worker.key, "k");
 });
 
 test("the command goes in ~/.local/bin when that's on PATH, even behind another place it could go", () => {

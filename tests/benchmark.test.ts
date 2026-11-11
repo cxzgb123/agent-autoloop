@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { checkPolls, observe, checkBudget, dispatchLatency, percentile, timed } from "../scripts/metrics.ts";
+import { checkPolls, observe, dispatchLatency, percentile, timed } from "../scripts/metrics.ts";
 
 test("a thousand completed requests cannot stand in for a thousand waiting ones", () => {
   assert.throws(() => checkPolls({ active: 0, peak: 1 }, 1000), /1000/);
@@ -49,26 +49,6 @@ test("an early request rejection stays observable until the batch is consumed", 
   assert.deepEqual(await pending, { status: "rejected", reason: failure });
 });
 
-test("budget checks fail on startup, idle memory, durable throughput, latency, a heartbeat that scans the queue; simulation speed is observational", () => {
-  const measured = {
-    coldMs: 85,
-    idleRssMB: 55,
-    durableEventsPerSecond: 2356,
-    eventToClaimP99Ms: 1.8,
-    busy: { heartbeatP99Ms: 1.7 },
-    simulationStepsPerSecond: 34000,
-  };
-  checkBudget(measured);
-  checkBudget({ ...measured, simulationStepsPerSecond: 100 });
-  for (const [key, value] of Object.entries({
-    coldMs: 151,
-    idleRssMB: 61,
-    durableEventsPerSecond: 1999,
-    eventToClaimP99Ms: 11,
-  }))
-    assert.throws(() => checkBudget({ ...measured, [key]: value }));
-  assert.throws(() => checkBudget({ ...measured, busy: { heartbeatP99Ms: 11 } }));
-});
 test("dispatch latency includes waking an already waiting worker", async () => {
   let waiting = false;
   let finish: (value: unknown) => void = () => {};

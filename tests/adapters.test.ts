@@ -1,17 +1,26 @@
 // What's different about each agent. Failure cases: a level of access maps to the wrong flag, full access is given unasked,
 // a retry starts a new conversation instead of going on, an error or a turn that never finished counts as an answer, a
-// program's warning is taken for its answer, a finished Claude run printed as one JSON array is read as a failure, the
+// reconnect Codex announced and got over before its turn finished fails the finished run, a program's warning is taken
+// for its answer, a finished Claude run printed as one JSON array is read as a failure, the
 // session isn't picked out, a command line's placeholder isn't filled in, or a background Codex run assumes it inherited
 // an application's browser connection. A turn that got going and then broke, or was killed before it finished, doesn't
 // say it started, so the worker runs its prompt again; one that never got going says it did, so the worker doesn't start a
 // new session for it; what Claude said before a background task ended is taken for its answer, or starts the wait for a
-// turn that won't exit; the raw messages of a broken Claude run become the reason it failed. A line of output that's JSON
-// but no message, like `null`, stops a plugin reading anything.
+// turn that won't exit; the raw messages of a broken Claude run become the reason it failed. A receipt an Agent wrote
+// and then lost because a background task called it back for another turn is dropped, so the card it asked for never
+// exists and the work looks untouched; or, carried along, it replaces one the last turn wrote wrongly, so a cancelled
+// review comes back. A line of output that's JSON
+// but no message, like `null`, stops a plugin reading anything. A command line's placeholder pass rewrites the prompt
+// itself — a `{cwd}` or a `$&` the person wrote arrives as the folder or as `{prompt}` — so the program is asked
+// something other than what the event said. A built-in agent starts the program it finds, not the one its rules name,
+// so a wrapper that sends Claude Code to another service is never run. A service tier the rules name for Codex never
+// reaches its command line, so the run takes whatever tier the machine's own Codex config has that day.
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setup } from "./helpers.ts";
+import { readMessage, resultFrom } from "../worker/contract.ts";
 
 const { findProgram } = await import("../worker/agents.ts");
 // Command construction must also run on CI machines without Codex installed. The shell-based lookup only exists on
@@ -30,6 +39,7 @@ type Adapter = import("../worker/agents.ts").Adapter;
 const claude: Adapter = (await import("../plugins/claude/agent.ts")).default;
 const codex: Adapter = (await import("../plugins/codex/agent.ts")).default;
 const command: Adapter = (await import("../plugins/command/agent.ts")).default;
+const dsh: Adapter = (await import("../plugins/dsh/agent.ts")).default;
 
 const turn = {
   prompt: "做这件事",
@@ -53,6 +63,14 @@ const stubbed = (adapter: Adapter, t: object) => {
     return null;
   }
 };
+
+test("a built-in agent starts the program its rules name, with its own arguments after it", () => {
+  for (const adapter of [claude, codex, dsh]) {
+    const argv = adapter.command({ ...turn, program: "/opt/bin/via-gateway" });
+    assert.equal(argv[0], "/opt/bin/via-gateway");
+    assert.ok(argv.includes("做这件事") || argv.some((part) => part.includes("做这件事")), "the prompt still goes in");
+  }
+});
 
 test("Claude Code: access, new and going on, model", { skip: !stubbed(claude, {}) }, () => {
   const argv = stubbed(claude, {})!;
@@ -188,6 +206,65 @@ test("Claude Code: what it said before a background task ended isn't its answer"
   assert.equal(claude.read(done, 0, "").text, "结束了");
 });
 
+test("Claude Code: a receipt it wrote isn't lost when a background task calls it back", () => {
+  const block = (receipt: object) => "```agent-autoloop\n" + JSON.stringify(receipt) + "\n```";
+  const ask = { title: "要不要修", text: "这个缺陷要不要修", options: ["修", "不修"], recommend: 0, key: "k" };
+  // The task ends after the answer, so Claude Code is called back for another turn that says nothing about the ask.
+  const called = stream(
+    init,
+    tool,
+    tasks("t1"),
+    toolResult,
+    said(`查清楚了，等你决定。\n\n${block({ ask: [ask] })}`, 30),
+    tasks(),
+    init,
+    tool,
+    said("没事可做：已经发过卡了"),
+  );
+  const read = claude.read(called, 0, "");
+  assert.ok(read.text!.startsWith("没事可做：已经发过卡了"), "the last turn's word is still the answer");
+  const handed = resultFrom(readMessage(read.text!), {});
+  assert.equal(handed.problem, undefined, "and it is handed in as a receipt the hub can read");
+  assert.deepEqual(handed.result.ask, [ask]);
+  assert.equal(handed.result.outcome, "nothing", "the last turn's own words decide the outcome");
+  // Called back more than once, the latest receipt it wrote is the one that still counts.
+  const twice = stream(
+    init,
+    said(`第一次\n\n${block({ notice: [{ title: "旧的", text: "旧的通知" }] })}`),
+    init,
+    said(`第二次\n\n${block({ notice: [{ title: "新的", text: "新的通知" }] })}`),
+    init,
+    said("没事可做：都发过了"),
+  );
+  const notices = (text: string) => readMessage(text).receipt?.notice as { title: string; text: string }[] | undefined;
+  assert.equal(notices(claude.read(twice, 0, "").text!)?.[0].title, "新的");
+  // Its own receipt is not replaced by an older one, and with none before it nothing is invented.
+  const own = stream(
+    init,
+    said(`先说一句\n\n${block({ notice: [{ title: "旧的", text: "旧的通知" }] })}`),
+    init,
+    said(`最后\n\n${block({ later: [{ key: "c", at: "2026-11-08T09:00:00+08:00", about: "复查" }] })}`),
+  );
+  const kept = readMessage(claude.read(own, 0, "").text!).receipt as {
+    notice?: unknown;
+    later?: { key: string }[];
+  };
+  assert.equal(kept.later?.[0].key, "c", "it keeps the receipt of its own last turn");
+  assert.equal(kept.notice, undefined, "and no older one is added beside it");
+  assert.equal(claude.read(stream(init, said("先说一句"), init, said("最后一句")), 0, "").text, "最后一句");
+  // A last turn that wrote a receipt wrongly is asked to write it again, not handed an older one in its place.
+  const earlier = said(
+    `先说一句\n\n${block({ later: [{ key: "c", at: "2026-11-08T09:00:00+08:00", about: "复查" }] })}`,
+  );
+  const mislabelled = "最后\n\n```json\n" + JSON.stringify({ later: [{ key: "c", cancel: true }] }) + "\n```";
+  const unclosed = "最后\n\n```agent-autoloop\n" + JSON.stringify({ later: [{ key: "c", cancel: true }] }) + "```";
+  for (const last of [mislabelled, unclosed]) {
+    const message = readMessage(claude.read(stream(init, earlier, init, said(last)), 0, "").text!);
+    assert.equal(message.receipt, undefined, "the older receipt stands in for the one it got wrong");
+    assert.ok(message.problem, "and it isn't asked to write its own again");
+  }
+});
+
 test("Codex: access, new and going on", { skip: !stubbed(codex, {}) }, () => {
   const argv = stubbed(codex, {})!;
   assert.deepEqual(argv.slice(1, 4), ["exec", "--json", "--skip-git-repo-check"]);
@@ -196,12 +273,15 @@ test("Codex: access, new and going on", { skip: !stubbed(codex, {}) }, () => {
   assert.ok(argv.includes('approval_policy="never"'));
   assert.ok(stubbed(codex, { access: "read" })!.includes('sandbox_mode="read-only"'));
   assert.ok(stubbed(codex, { access: "full" })!.includes('sandbox_mode="danger-full-access"'));
-  const again = stubbed(codex, { resume: "thread-1", model: "m", effort: "xhigh" })!;
+  const again = stubbed(codex, { resume: "thread-1", model: "m", effort: "xhigh", tier: "priority" })!;
   assert.deepEqual(again.slice(1, 3), ["exec", "resume"]);
   assert.equal(again.at(-2), "thread-1");
   assert.equal(again.at(-1), argv.at(-1));
   assert.ok(has(again, "-m", "m"));
   assert.ok(again.includes('model_reasoning_effort="xhigh"'));
+  assert.ok(again.includes('service_tier="priority"'));
+  assert.ok(stubbed(codex, { tier: "priority" })!.includes('service_tier="priority"'), "a new run gets it too");
+  assert.ok(!argv.some((part) => part.startsWith("service_tier")), "left to Codex's own config unless the rules say");
 });
 
 test(
@@ -228,6 +308,15 @@ test("Codex: only a finished turn's last message is its answer", () => {
   const said = (text: string) => ({ type: "item.completed", item: { type: "agent_message", text } });
   const ended = { type: "turn.completed", usage: { input_tokens: 9, cached_input_tokens: 3, output_tokens: 1 } };
   assert.deepEqual(codex.read(lines(started, warning, said("中途"), said("好了"), ended), 0, ""), {
+    session: "t",
+    text: "好了",
+    finished: true,
+    sessionUsage: { input: 9, output: 1, cached: 3 },
+  });
+  // A reconnect Codex announced and then got over (it fell back to another transport and carried on) is not how the
+  // turn ended: twelve finished runs with receipts were thrown away and redone over one of these.
+  const reconnect = { type: "error", message: "Reconnecting... 5/5 (request timed out)" };
+  assert.deepEqual(codex.read(lines(started, reconnect, said("好了"), ended), 0, ""), {
     session: "t",
     text: "好了",
     finished: true,
@@ -286,13 +375,30 @@ test("a plain command: placeholders filled in, stdout is its last message, a bad
   assert.equal(command.link, undefined, "it has no session to go on in");
 });
 
+test("a plain command's prompt reaches the program as it was written, whatever it contains", () => {
+  // The prompt is what someone asked for; the placeholders belong to the command line, not to the words put in it.
+  const written = [
+    "把 {cwd} 这个词原样打印出来",
+    "价格是 $& 元",
+    "路径 $` 和 $' 也要留下",
+    "{context} 和 {prompt} 都是字面",
+  ];
+  for (const prompt of written) {
+    const argv = command.command({ ...turn, prompt, command: ["tool", "-p", "{prompt}"] });
+    assert.deepEqual(argv, ["tool", "-p", prompt], `${prompt} 传到程序时被改写了`);
+  }
+  // The command line itself still fills in, and one that names the prompt twice gets it twice.
+  const both = command.command({ ...turn, model: "m", command: ["tool", "{prompt}", "{model}"] });
+  assert.deepEqual(both, ["tool", "做这件事", "m"]);
+});
+
 test("a program that isn't there says so", () => {
   assert.throws(() => findProgram("surely-not-installed-anywhere"), /找不到 surely-not-installed-anywhere/);
 });
 
 test("a line of output that's JSON but no message is noise to every plugin", () => {
   const noise = 'null\n42\n"words"\n[]\n';
-  for (const adapter of [claude, codex, command]) {
+  for (const adapter of [claude, codex, command, dsh]) {
     assert.doesNotThrow(() => adapter.read(noise, null, ""));
     assert.doesNotThrow(() => adapter.read(noise, 0, ""));
   }

@@ -15,14 +15,25 @@
 // in meanwhile loses the session of the answer in it, or has it wiped by what had none. A run with events from two
 // sources is given, or closes, cards that have no source. A channel that takes a card and never reports gets it for ever.
 // A card closed while its first message is on the way never gets that message updated.
+// A rule that lists its channels has its cards, and the notices of its runs, sent to others as well; one that lists none
+// stops reaching every channel; a notice of nobody's rule reaches only some. With defaultChannels, a card that names no
+// channels of its own (a tell, the hub's own alert, a task elsewhere asking, a rule without a list) still reaches every
+// channel, so several channels each repeat it (issue #221); and a rule that lists its own is held to the default.
+// Receipt FYIs must arrive closed without buttons, stay out of later open lists, and never wake work when clicked;
+// ordinary notices, questions, quiet rules, and the one-day FYI delivery window must keep their existing behavior.
+// The why timeline must show receipt FYIs without adding empty closures or repeating hub-generated end notices.
+// The answers material carries the chosen text, or a 0-based choice gets read as the first option (issue #197: an Agent
+// reported 绿色 as 蓝色).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { at, setup } from "./helpers.ts";
+import { render } from "../plugins/feishu/channel.ts";
+import { formatWhy } from "../cli/why.ts";
 
 setup("cards");
-const { ingest } = await import("../host/runtime.ts");
-const { cancel, claimNext, execute, finish, heartbeat, started, sweep } = await import("../host/runtime.ts");
-const { answer, resolve, nextCard, delivered, failed, tell, cardByToken, getView } = await import("../host/runtime.ts");
+const { ingest } = await import("./hub.ts");
+const { cancel, claimNext, execute, finish, heartbeat, started, sweep, why } = await import("./hub.ts");
+const { answer, resolve, nextCard, delivered, failed, tell, cardByToken, getView } = await import("./hub.ts");
 const { AuthError, InputError, NotFound } = await import("../kernel/errors.ts");
 const { all, one, run } = await import("./storage.ts");
 
@@ -102,6 +113,20 @@ test("an answer wakes the thread that asked, in its session, with what it left f
   finish(job.run, job.token, { outcome: "done", summary: "留着，已记下" }, at(3));
   assert.deepEqual([card(id).state, card(id).result], ["done", "留着，已记下"]);
   assert.equal(card(id).version, before + 1);
+});
+
+test("the answers material carries the chosen text so the 0-based choice can't be read as the first option", () => {
+  clean();
+  const { id } = asked(1);
+  answer(id, { choice: 1, by: "me" }, at(1));
+  const job = claim("w1", at(1))!;
+  assert.deepEqual([job.context.answers[0].choice, job.context.answers[0].chosen], [1, "留着"]);
+  // A free-text answer has no choice: the chosen text is the answer itself.
+  finish(job.run, job.token, { outcome: "done", ask: [question] }, at(2));
+  const second = one<{ id: number }>("SELECT id FROM cards WHERE id != ?", [id])!.id;
+  answer(second, { text: "先备份再删", by: "me" }, at(3));
+  const free = claim("w1", at(3))!;
+  assert.deepEqual([free.context.answers[0].choice, free.context.answers[0].chosen], [null, "先备份再删"]);
 });
 
 test("an answer while another run holds the thread joins the next run, and a merged run still carries it", () => {
@@ -412,6 +437,56 @@ test("each channel gets each card once, and an update when its state changes; a 
   assert.deepEqual([row.version, row.ref], [2, "om_1"]);
 });
 
+test("a rule that lists channels has its cards go only there; one that lists none, or a notice of no rule, goes to all", () => {
+  clean();
+  underRules(
+    (rules) => {
+      rules.rules.find((rule: { name: string }) => rule.name === "意见").channels = ["plain"];
+    },
+    () => {
+      const { id } = asked(1);
+      assert.equal(nextCard("chat", at(1)), null, "chat isn't on the rule's list");
+      assert.equal(nextCard("plain", at(1))?.id, id);
+      tell("hub:test", "中台", "谁都该知道", at(2));
+      assert.ok(nextCard("chat", at(2)), "a notice of no rule still reaches every channel");
+    },
+  );
+  clean();
+  const { id } = asked(2);
+  assert.equal(nextCard("chat", at(1))?.id, id, "without a list, every channel gets it");
+  assert.equal(nextCard("plain", at(1))?.id, id);
+});
+
+test("defaultChannels takes every card that names no channels of its own; a rule's own list still wins", () => {
+  clean();
+  underRules(
+    (rules) => {
+      rules.defaultChannels = ["plain"];
+      rules.rules.find((rule: { name: string }) => rule.name === "意见").channels = ["chat"];
+    },
+    () => {
+      const told = tell("source:app:k", "应用", "只说一次", at(1)).card;
+      assert.equal(nextCard("chat", at(1)), null, "a tell isn't repeated on chat");
+      assert.equal(nextCard("plain", at(1))?.id, told);
+      delivered("plain", told, 1, "p_1", at(1));
+      const { id } = asked(1);
+      assert.equal(nextCard("chat", at(2))?.id, id, "the rule's own list, not the default");
+      assert.equal(nextCard("plain", at(2)), null);
+    },
+  );
+  clean();
+  underRules(
+    (rules) => {
+      rules.defaultChannels = ["plain"];
+    },
+    () => {
+      const { id } = asked(2);
+      assert.equal(nextCard("chat", at(1)), null, "a rule without a list goes where the default says");
+      assert.equal(nextCard("plain", at(1))?.id, id);
+    },
+  );
+});
+
 test("a failed send is retried further and further apart, then given up within the hour; a channel that never came hasn't failed", () => {
   clean();
   const id = tell("source:app:k", "应用", "周报来了", at(0)).card;
@@ -525,6 +600,171 @@ test("a notice has one button that closes it; something only to know has none an
   assert.deepEqual([given.id, given.state, given.options], [fyi, "closed", []]);
 });
 
+test("a card closed as it's made says when, or whatever reads the state takes it for still waiting", () => {
+  clean();
+  tell("source:app:k3", "应用", "只是告诉你", at(1));
+  ingest("app", note(1), at(2));
+  const job = claim("w1", at(2))!;
+  finish(job.run, job.token, { outcome: "done", notice: [{ title: "已设好", text: "每天九点", fyi: true }] }, at(3));
+  const [told, receipt] = [nextCard("chat", at(3))!, nextCard("chat", at(3))!];
+  assert.deepEqual([told.state, told.closedAt], ["closed", new Date(at(1)).toISOString()]);
+  assert.deepEqual([receipt.state, receipt.closedAt], ["closed", new Date(at(3)).toISOString()]);
+});
+
+test("receipt FYIs arrive as grey closed cards; ordinary notices and questions still need handling", () => {
+  clean();
+  ingest("app", note(1), at(0));
+  const job = claim("w1", at(0))!;
+  finish(
+    job.run,
+    job.token,
+    {
+      outcome: "done",
+      ask: [question],
+      notice: [
+        { title: "已设好", text: "每天九点检查", fyi: true },
+        { title: "要开权限", text: "请开通权限" },
+        { title: "要查告警", text: "请查看日志", fyi: false },
+      ],
+    },
+    at(1),
+  );
+  const shown = Array.from({ length: 4 }, () => nextCard("chat", at(1))!);
+  assert.deepEqual(
+    shown.map((c) => [c.title, c.state, c.options]),
+    [
+      [question.title, "open", question.options],
+      ["已设好", "closed", []],
+      ["要开权限", "open", ["已处理"]],
+      ["要查告警", "open", ["已处理"]],
+    ],
+  );
+  for (const c of shown) delivered("chat", c.id, c.version, `om_${c.id}`, at(1));
+  const fyi = shown[1];
+  const grey = render(fyi);
+  assert.equal(grey.header.template, "grey");
+  assert.doesNotMatch(JSON.stringify(grey), /callback|已处理/);
+  for (const c of [shown[0], shown[2], shown[3]]) {
+    assert.equal(render(c).header.template, "blue");
+    assert.match(JSON.stringify(render(c)), /callback/);
+  }
+  assert.deepEqual(answer(fyi.id, { choice: 0, by: "me", channel: "chat", ref: `om_${fyi.id}` }, at(2)), {
+    changed: false,
+    state: "closed",
+  });
+  assert.equal(claim("w1", at(2)), null, "a closed FYI cannot wake another round");
+  ingest("app", note(1, "followup"), at(3));
+  const next = claim("w1", at(3))!;
+  assert.deepEqual(
+    next.context.events.map((e) => e.type),
+    ["feedback.followup"],
+  );
+  assert.deepEqual(next.context.answers, []);
+  assert.deepEqual(
+    next.context.open.map((c) => c.title),
+    [question.title, "要开权限", "要查告警"],
+  );
+  finish(
+    next.run,
+    next.token,
+    {
+      outcome: "done",
+      resolve: [{ card: shown[2].id, reason: "权限已开通" }],
+    },
+    at(4),
+  );
+  const resolved = nextCard("chat", at(4))!;
+  assert.deepEqual([resolved.id, resolved.state, resolved.options], [shown[2].id, "closed", []]);
+  assert.equal(answer(shown[3].id, { choice: 0, by: "me" }, at(4)).changed, true);
+  assert.equal(answer(shown[0].id, { choice: 1, by: "me" }, at(5)).changed, true);
+  assert.deepEqual(
+    claim("w1", at(5))!.context.events.map((e) => e.type),
+    ["card.answered"],
+  );
+});
+
+test("a run that keeps failing says its FYI once, and the third failure in a row is still told", () => {
+  clean();
+  ingest("app", note(1), at(0));
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const job = claim("w1", at(attempt * 120))!;
+    finish(
+      job.run,
+      job.token,
+      { outcome: "failed", error: "boom", notice: [{ title: "已试过", text: "还在试", key: "retry", fyi: true }] },
+      at(attempt * 120 + 1),
+    );
+  }
+  const cards = all<{ key: string; state: string }>("SELECT key, state FROM cards ORDER BY id");
+  assert.equal(cards.filter((card) => card.key.endsWith(":retry")).length, 1);
+  assert.equal(cards.filter((card) => card.key.endsWith(":failing") && card.state === "open").length, 1);
+});
+
+test("why shows receipt FYIs while keeping hub end notices and empty closures hidden", () => {
+  clean();
+  ingest("ops", { id: "why-fyi", type: "alert.raised", subject: "probe" }, at(0));
+  const job = claim("w2", at(0))!;
+  finish(
+    job.run,
+    job.token,
+    {
+      outcome: "done",
+      summary: "本轮检查完成",
+      notice: [
+        { title: "仅告知的结果", text: "已经完成核实", fyi: true },
+        { title: "仍需处理的结果", text: "请检查日志" },
+      ],
+    },
+    at(1),
+  );
+  const output = formatWhy(job.run, why(job.run));
+  assert.match(output, /通知：仅告知的结果/);
+  assert.match(output, /已经完成核实/);
+  assert.match(output, /通知：仍需处理的结果/);
+  assert.match(output, /结束：本轮检查完成/);
+  assert.doesNotMatch(output, /通知：告警|结案：仅告知的结果/);
+  assert.equal(output.split("本轮检查完成").length - 1, 1);
+});
+
+test("a receipt FYI is deliverable for one day even though it starts closed", () => {
+  clean();
+  ingest("app", note(1), at(0));
+  const job = claim("w1", at(0))!;
+  finish(
+    job.run,
+    job.token,
+    {
+      outcome: "done",
+      notice: [{ title: "已上线", text: "可以使用了", fyi: true }],
+    },
+    at(0),
+  );
+  assert.equal(nextCard("chat", at(24 * 60))?.state, "closed");
+  assert.equal(nextCard("plain", at(24 * 60 + 1)), null);
+});
+
+for (const fyi of [undefined, false, true]) {
+  test(`tell never keeps receipt notices quiet with fyi=${fyi} while questions still arrive`, () => {
+    clean();
+    ingest("ops", { id: "alert", type: "alert.raised", subject: "probe" }, at(0));
+    const job = claim("w1", at(0))!;
+    finish(
+      job.run,
+      job.token,
+      {
+        outcome: "done",
+        ask: [question],
+        notice: [{ title: "记下了", text: "留作记录", ...(fyi !== undefined && { fyi }) }],
+      },
+      at(0),
+    );
+    const shown = nextCard("chat", at(1))!;
+    assert.deepEqual([shown.kind, shown.state, shown.options], ["ask", "open", question.options]);
+    delivered("chat", shown.id, shown.version, "om_ask", at(1));
+    assert.equal(nextCard("chat", at(2)), null, "quiet notices never reach the channel");
+  });
+}
+
 test("what only needed saying is told once per key; given up, it can be told again", () => {
   clean();
   const first = tell("source:app:k", "应用", "周报", at(0));
@@ -554,9 +794,9 @@ test("what only needed saying goes stale: a channel coming back after a day does
 test("a card's link goes only to a channel that allows it, and opens only that card", () => {
   clean();
   const { id } = asked(1);
-  const token = card(id).token;
-  assert.match(nextCard("plain", at(1))!.link!, new RegExp(`^https://hub\\.test/c/${token}$`));
+  const link = nextCard("plain", at(1))!.link!;
+  assert.match(link, /^https:\/\/hub\.test\/c\/[\w-]+$/);
   assert.equal(nextCard("chat", at(1))!.link, null, "a channel with buttons has no use for a link that answers");
-  assert.equal(cardByToken(token)!.id, id);
+  assert.equal(cardByToken(new URL(link).pathname.slice("/c/".length))!.id, id);
   assert.equal(cardByToken("made-up"), undefined);
 });

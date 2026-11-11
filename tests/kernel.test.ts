@@ -42,7 +42,7 @@ test("decisions are deterministic and leave their input untouched", () => {
 
 test("rules, receipt replay and rebuild retain the exact acknowledgment", async () => {
   const { DatabaseSync } = await import("node:sqlite");
-  const { commit, readLog } = await import("../kernel/store.ts");
+  const { commit, iterateLog } = await import("../kernel/store.ts");
   const db = new DatabaseSync(":memory:");
   db.exec(
     "CREATE TABLE facts(seq INTEGER PRIMARY KEY,fact TEXT); CREATE TABLE projections(collection TEXT,key TEXT,data TEXT,PRIMARY KEY(collection,key))",
@@ -52,7 +52,7 @@ test("rules, receipt replay and rebuild retain the exact acknowledgment", async 
   v = commit(db, v, () => d.facts);
   const expected = snapshot(v);
   db.prepare("INSERT INTO projections VALUES ('events','junk','{}')").run();
-  const rebuilt = evolve(empty(), readLog(db), db, true);
+  const rebuilt = evolve(empty(), iterateLog(db), db, true);
   assert.deepEqual(snapshot(rebuilt), expected);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projections WHERE key='junk'").get()!.n, 0);
   db.close();
@@ -493,7 +493,7 @@ test("quiet notices are absent from channel delivery", () => {
 
 test("a stale writer receives a conflict and cannot change the committed view", async () => {
   const { DatabaseSync } = await import("node:sqlite");
-  const { commit, readLog } = await import("../kernel/store.ts");
+  const { commit, iterateLog } = await import("../kernel/store.ts");
   const { Conflict } = await import("../kernel/errors.ts");
   const db = new DatabaseSync(":memory:");
   try {
@@ -515,7 +515,7 @@ test("a stale writer receives a conflict and cannot change the committed view", 
       environment,
     );
     assert.throws(() => commit(db, initial, () => stale.facts), Conflict);
-    assert.deepEqual(snapshot(evolve(empty(), readLog(db))), snapshot(changed));
+    assert.deepEqual(snapshot(evolve(empty(), iterateLog(db))), snapshot(changed));
   } finally {
     db.close();
   }

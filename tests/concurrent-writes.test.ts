@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { setup } from "./helpers.ts";
 
 const home = setup("concurrent-writes");
-const hub = await import("../host/runtime.ts");
+const hub = await import("./hub.ts");
 
 const bin = join(import.meta.dirname, "..", "bin", "agent-autoloop.ts");
 hub.addKey("source", "app");

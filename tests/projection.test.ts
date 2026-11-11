@@ -135,7 +135,7 @@ test("opening another process never exposes a missing SQL view", async () => {
     }
   };
   try {
-    const hub = await import("../host/runtime.ts");
+    const hub = await import("./hub.ts");
     hub.db.close();
     assert.ok(checked);
   } finally {

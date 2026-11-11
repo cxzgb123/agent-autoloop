@@ -3,9 +3,6 @@ import type { DatabaseSync } from "node:sqlite";
 import { Conflict } from "./errors.ts";
 import { evolve, initialize, statement, View, type Fact } from "./evolve.ts";
 
-export function readLog(db: DatabaseSync, after = 0): Fact[] {
-  return [...iterateLog(db, after)];
-}
 export function* iterateLog(db: DatabaseSync, after = 0): Generator<Fact> {
   for (const row of db.prepare("SELECT fact FROM facts WHERE seq > ? ORDER BY seq").iterate(after))
     yield JSON.parse(String(row.fact));

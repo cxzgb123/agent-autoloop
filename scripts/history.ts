@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 const mode = process.argv[2];
 if (["seed", "server", "rebuild"].includes(mode)) {
-  const hub = await import("../host/runtime.ts");
+  const hub = await import("../tests/hub.ts");
   const { db } = hub;
   if (mode === "seed") {
     const start = Number(process.argv[3]),

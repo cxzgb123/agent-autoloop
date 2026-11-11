@@ -1,10 +1,12 @@
 // The rules file is what the owner changes by asking an Agent, so a mistake must be caught, say which rule and what is
 // wrong, and leave the old rules running. Failure cases: a rule naming a source or agent that isn't there; two rules with
 // one name; a rule matching no event or with both a source and a schedule; a schedule that is malformed or never comes; an
-// unknown way of telling; an agent without a worker, with an unknown access level, or a command without a command line;
-// a rule with neither a skill nor a prompt, or without a folder; a misspelt field taken silently; a rule running more
-// than one at a time without saying how many, or rules in one group disagreeing on it; an emit naming a source that isn't
-// there; a scheduled task shown on the page naming a source or agent that isn't there or a malformed schedule; a time zone
+// unknown way of telling; an agent without a worker, with an unknown access level, a program to start that isn't one
+// path, a service tier that isn't a word, or a command without a command line; a
+// rule that sends its work to an ACP agent with no command line, which only shows when it runs and then fails ten times, or
+// an ACP agent like that which no rule uses and which never hurt anyone being refused; a rule with neither a skill nor a
+// prompt, or without a folder; a misspelt field taken silently; a rule running more than one at a time without saying how many, or
+// rules in one group disagreeing on it; an emit naming a source that isn't there; a rule's channels naming one that isn't there, or none at all; defaultChannels naming one that isn't there, or none at all; a scheduled task shown on the page naming a source or agent that isn't there or a malformed schedule, or saying how its answers go on without where (cwd), or where without how; a time zone
 // that doesn't exist; the reserved source redefined; a null rule crashes reload instead of keeping the old rules.
 // A good file changing on disk takes effect; a bad one doesn't, and says why. A file that is gone or can't be read
 // crashes the hub, at reload or at restart, instead of keeping the rules it had. A file broken while the hub was down
@@ -17,7 +19,7 @@ import { test } from "node:test";
 import { setup } from "./helpers.ts";
 
 const home = setup("rules");
-const { parseRules, RulesError, rules, ruleNamed, reloadRules } = await import("../host/runtime.ts");
+const { parseRules, RulesError, rules, ruleNamed, reloadRules, one } = await import("./hub.ts");
 const { typeMatches } = await import("../kernel/rules.ts");
 
 const good = () => JSON.parse(readFileSync(join(import.meta.dirname, "rules.fixture.json"), "utf8"));
@@ -42,12 +44,32 @@ test("the fixture loads, with defaults filled in", () => {
   assert.equal(r.sources.schedule.name, "定时");
   assert.equal(r.agents.a1.access, "edit", "the safe level unless the rule's author asks otherwise");
   assert.equal(r.agents.a2.access, "full");
+  const wrapped = good();
+  wrapped.agents.a1.program = "/opt/bin/claude-via-gateway";
+  assert.equal(parseRules(JSON.stringify(wrapped)).agents.a1.program, "/opt/bin/claude-via-gateway");
+  wrapped.agents.a1.maxActive = 3;
+  wrapped.rules[0].maxActive = 1;
+  const limited = parseRules(JSON.stringify(wrapped));
+  assert.equal(limited.agents.a1.maxActive, 3);
+  assert.equal(limited.rules[0].maxActive, 1);
 });
 
 test("a mistake says which rule and what is wrong", () => {
   problem((r) => {
     r.rules[0].to = "nobody";
   }, /规则「意见」.*to.*不是已登记的 Agent：nobody/);
+  problem((r) => {
+    r.rules[0].channels = ["chat", "nowhere"];
+  }, /规则「意见」.*channels.*nowhere/);
+  problem((r) => {
+    r.rules[0].channels = [];
+  }, /规则「意见」.*channels/);
+  problem((r) => {
+    r.defaultChannels = ["nowhere"];
+  }, /defaultChannels.*nowhere/);
+  problem((r) => {
+    r.defaultChannels = [];
+  }, /defaultChannels/);
   problem((r) => {
     r.rules[0].when.source = "nowhere";
   }, /规则「意见」.*来源.*nowhere/);
@@ -90,6 +112,15 @@ test("a mistake says which rule and what is wrong", () => {
     r.rules[0].parallel = 0;
   }, /规则「意见」.*parallel/);
   problem((r) => {
+    r.rules[0].maxActive = 0;
+  }, /规则「意见」.*maxActive/);
+  problem((r) => {
+    r.agents.a1.maxActive = 1.5;
+  }, /Agent a1.*maxActive/);
+  problem((r) => {
+    r.rules[0].resume = "thread";
+  }, /规则「意见」.*resume/);
+  problem((r) => {
     r.rules[4].emits.source = "nowhere";
   }, /规则「巡检」.*emits/);
   problem((r) => {
@@ -98,6 +129,12 @@ test("a mistake says which rule and what is wrong", () => {
   problem((r) => {
     r.agents.a1.access = "root";
   }, /Agent a1.*access/);
+  problem((r) => {
+    r.agents.a1.program = ["/opt/bin/claude"];
+  }, /Agent a1.*program/);
+  problem((r) => {
+    r.agents.a2.tier = "";
+  }, /Agent a2 的 tier/);
   problem((r) => {
     delete r.agents.a3.command;
   }, /Agent a3.*command/);
@@ -126,6 +163,15 @@ test("a mistake says which rule and what is wrong", () => {
     r.elsewhere[0].name = "意见";
   }, /定时任务「意见」.*重名/);
   problem((r) => {
+    r.elsewhere[0].skill = "weekly";
+  }, /定时任务「每周清理」.*cwd/);
+  problem((r) => {
+    r.elsewhere[0].cwd = "code/app";
+  }, /定时任务「每周清理」.*cwd/);
+  problem((r) => {
+    r.elsewhere[0].cwd = "~/code/app";
+  }, /定时任务「每周清理」.*skill 和 prompt/);
+  problem((r) => {
     r.timezone = "Mars/Olympus";
   }, /timezone/);
   problem((r) => {
@@ -150,9 +196,7 @@ test("a null rule is a rules error and leaves the running configuration intact",
   const broken = good();
   broken.rules = [null];
   writeFileSync(file, JSON.stringify(broken));
-  const answer = reloadRules(file);
-  assert.equal(answer.changed, false);
-  assert.match(answer.problem!, /对象/);
+  assert.match(reloadRules(file).problem!, /对象/);
   assert.equal(ruleNamed("意见")!.to, "a1");
 });
 
@@ -168,22 +212,21 @@ test("a good file changing on disk takes effect; a bad one leaves the old rules 
   const changed = good();
   changed.rules[0].prompt = "新的说法。";
   writeFileSync(file, JSON.stringify(changed));
-  assert.deepEqual(reloadRules(file), { changed: true });
+  assert.equal(reloadRules(file).problem, undefined);
   assert.equal(ruleNamed("意见")!.prompt, "新的说法。");
-  assert.deepEqual(reloadRules(file), { changed: false }, "nothing new on disk");
+  const facts = () => one<{ count: number }>("SELECT COUNT(*) AS count FROM facts")!.count;
+  const before = facts();
+  assert.equal(reloadRules(file).problem, undefined);
+  assert.equal(facts(), before, "nothing new on disk, so nothing goes in the log");
   const broken = good();
   broken.rules[0].to = "nobody";
   writeFileSync(file, JSON.stringify(broken));
-  const answer = reloadRules(file);
-  assert.equal(answer.changed, false);
-  assert.match(answer.problem!, /nobody/);
+  assert.match(reloadRules(file).problem!, /nobody/);
   assert.equal(ruleNamed("意见")!.prompt, "新的说法。", "the old rules keep running");
 });
 
 test("a rules file that can't be read is a problem, not a crash, and the old rules keep running", () => {
-  const answer = reloadRules(join(home, "gone.json"));
-  assert.equal(answer.changed, false);
-  assert.match(answer.problem!, /找不到/);
+  assert.match(reloadRules(join(home, "gone.json")).problem!, /找不到/);
   assert.equal(ruleNamed("意见")!.prompt, "新的说法。");
   assert.match(reloadRules(home).problem!, /读不到/, "a folder where the file should be");
 });
@@ -227,7 +270,7 @@ test("a hub restarting without its rules file comes up on the rules it had; a ne
         "--disable-warning=ExperimentalWarning",
         "--input-type=module",
         "-e",
-        `const hub = await import(${JSON.stringify(new URL("../host/runtime.ts", import.meta.url).href)});` +
+        `const hub = await import(${JSON.stringify(new URL("./hub.ts", import.meta.url).href)});` +
           `console.log(hub.ruleNamed("意见")?.prompt)`,
       ],
       { env: { ...process.env, ...env }, encoding: "utf8" },

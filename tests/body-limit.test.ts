@@ -7,7 +7,7 @@ import { after, test } from "node:test";
 import { setup } from "./helpers.ts";
 
 setup("body-limit");
-const hub = await import("../host/runtime.ts");
+const hub = await import("./hub.ts");
 const { makeHandler } = await import("../host/server.ts");
 const { serve } = await import("../host/http.ts");
 const runtime = makeHandler();

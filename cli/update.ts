@@ -5,8 +5,6 @@ import { spawnSync } from "node:child_process";
 
 const PUBLISHED = "https://github.com/KKKKhazix/agent-autoloop.git";
 const RELEASE = /refs\/tags\/(v(\d+)\.(\d+)\.(\d+))$/;
-/** It can only pull a branch, so a copy sent there could never leave. */
-const CANT_UPDATE = "v1.0.0";
 
 function git(root: string, ...args: string[]) {
   const done = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
@@ -21,7 +19,7 @@ function latestRelease(root: string) {
     .split("\n")
     .flatMap((line) => {
       const found = RELEASE.exec(line);
-      return found && found[1] !== CANT_UPDATE ? [{ tag: found[1], version: found.slice(2).map(Number) }] : [];
+      return found ? [{ tag: found[1], version: found.slice(2).map(Number) }] : [];
     });
   const newer = (a: number[], b: number[]) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
   return releases.sort((a, b) => newer(a.version, b.version)).at(-1)?.tag ?? null;
@@ -32,7 +30,7 @@ export function updateCode(root: string) {
   const before = git(root, "rev-parse", "HEAD");
   const to = latestRelease(root);
   if (to) {
-    git(root, "fetch", "--quiet", "--depth", "1", "origin", `+refs/tags/${to}:refs/tags/${to}`);
+    git(root, "fetch", "--quiet", "--depth", "1", "origin", `refs/tags/${to}:refs/tags/${to}`);
     git(root, "checkout", "--quiet", "--detach", to);
   } else git(root, "pull", "--quiet", "--ff-only");
   return { changed: git(root, "rev-parse", "HEAD") !== before, to };

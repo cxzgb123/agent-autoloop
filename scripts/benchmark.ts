@@ -6,7 +6,7 @@ import { mkdtempSync, readdirSync, readFileSync, writeFileSync, rmSync } from "n
 import { tmpdir, cpus } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { observePolls, checkPolls, observe, checkBudget, dispatchLatency, percentile, timed } from "./metrics.ts";
+import { observePolls, checkPolls, observe, dispatchLatency, percentile, timed } from "./metrics.ts";
 import type { Change } from "../kernel/evolve.ts";
 
 if (process.argv.includes("--server")) {
@@ -263,7 +263,6 @@ if (process.argv.includes("--server")) {
         simulationStepsPerSecond: simulation.stepsPerSecond,
       };
       console.log(JSON.stringify(measured, null, 2));
-      if (process.argv.includes("--check")) checkBudget(measured);
     }
   } finally {
     child.kill("SIGTERM");

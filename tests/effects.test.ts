@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { at, setup } from "./helpers.ts";
 
 setup("effects");
-const { ingest, claimNext, finish, answer, execute } = await import("../host/runtime.ts");
+const { ingest, claimNext, finish, answer, execute } = await import("./hub.ts");
 const { InputError } = await import("../kernel/errors.ts");
 const { one, run } = await import("./storage.ts");
 

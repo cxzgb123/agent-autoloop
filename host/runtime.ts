@@ -1,23 +1,21 @@
 // The hub on this machine: its database, the view kept from the log, the rules file, and one way to apply an input.
 // Importing this opens them all, which is why the checks that must survive a bad rules file import it late.
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { HOME, RULES_FILE } from "./home.ts";
-import { cardHash, credential, digest, whose as keyHolder } from "../kernel/credentials.ts";
+import { privateDirectory } from "./files.ts";
+import { stateOf as state, viewStatements } from "./state.ts";
+import { cardHash, digest, whose as keyHolder } from "../kernel/credentials.ts";
 import { decide } from "../kernel/decide.ts";
 import { NotFound } from "../kernel/errors.ts";
-import { evolve, rows, keyOf, statement, type Fact, type Row, type Table } from "../kernel/evolve.ts";
+import { initialize, rows, statement, type Fact, type Row, type Table } from "../kernel/evolve.ts";
 import * as query from "../kernel/query.ts";
-import { stateOf as state } from "../kernel/state.ts";
 import { commitLatest, openView } from "../kernel/store.ts";
-import type { Job } from "../protocol/job.ts";
 import { parseRules as checkRules, RulesError } from "../protocol/rules.ts";
-import type { Rejected } from "../protocol/validate.ts";
 
-mkdirSync(HOME, { recursive: true, mode: 0o700 });
-chmodSync(HOME, 0o700);
+privateDirectory(HOME);
 const masterKeyFile = join(HOME, "master.key");
 if (!existsSync(masterKeyFile)) {
   writeFileSync(masterKeyFile, randomBytes(32).toString("base64url"), { mode: 0o600, flag: "wx" });
@@ -38,32 +36,11 @@ export const environment = {
 
 export const db = new DatabaseSync(join(HOME, "hub.db"));
 db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;");
-if (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='events'").get()) {
-  throw new Error("这是旧版数据库；本轮未提供导入工具，请使用新的 AGENT_AUTOLOOP_HOME");
-}
-db.exec(`
-  CREATE TABLE IF NOT EXISTS facts(seq INTEGER PRIMARY KEY, fact TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS projections(collection TEXT, key TEXT, data TEXT NOT NULL, PRIMARY KEY(collection, key));
-`);
-db.function("card_token", { deterministic: true }, (id, at) => credential(environment, "card", id, at));
 db.function("card_hash", { deterministic: true }, (id, at) => cardHash(environment, id, at));
-
-const schema = readFileSync(new URL("../kernel/schema.sql", import.meta.url), "utf8");
-const views: string[] = [];
-for (const [, table, body] of schema.matchAll(/CREATE TABLE (\w+) \(([\s\S]*?)\n\);/g)) {
-  const columns = [...body.matchAll(/^  (\w+) (?:INTEGER|TEXT)/gm)].map(([, column]) => column);
-  const selected = columns.map((column) =>
-    column === "token"
-      ? "card_token(json_extract(data,'$.id'),json_extract(data,'$.created_at')) AS token"
-      : `json_extract(data,'$.${column}') AS ${column}`,
-  );
-  views.push(
-    `DROP VIEW IF EXISTS ${table}; CREATE VIEW ${table} AS SELECT ${selected.join(",")} FROM projections WHERE collection='${table}'`,
-  );
-}
+initialize(db);
 
 // Other processes must see either the old views or the new ones, never the gap between DROP and CREATE.
-db.exec(`BEGIN IMMEDIATE; ${views.join(";")}; COMMIT`);
+db.exec(`BEGIN IMMEDIATE; ${viewStatements.join(";")}; COMMIT`);
 
 const CARD_HASH_INDEX =
   "CREATE INDEX IF NOT EXISTS projection_card_hash ON projections(card_hash(json_extract(data,'$.id'),json_extract(data,'$.created_at'))) WHERE collection='cards'";
@@ -118,35 +95,24 @@ export function execute(type: string, args: any[], now = Date.now()) {
 
 export const parseRules = (json: string, now = Date.now()) =>
   checkRules(json, now, Intl.DateTimeFormat().resolvedOptions().timeZone);
-export { RulesError };
 export let rules = query.configuration(current);
-let loaded = { file: "", mtime: 0 };
 
-export function reloadRules(file = RULES_FILE) {
-  let mtime: number;
+export function reloadRules(file = RULES_FILE): { problem?: string } {
   let text: string;
   try {
-    mtime = statSync(file).mtimeMs;
-    if (loaded.file === file && loaded.mtime === mtime) return { changed: false };
     text = readFileSync(file, "utf8");
   } catch (error) {
-    // A file moved back keeps its old mtime and must still be read again.
-    loaded = { file: "", mtime: 0 };
-    return { changed: false, problem: unreadable(file, error as NodeJS.ErrnoException) };
+    return { problem: unreadable(file, error as NodeJS.ErrnoException) };
   }
-  // Only a read that took effect is remembered. Whatever stopped this one has to be found again: at startup there's nobody
-  // to tell yet, and a database that's busy can take neither the new rules nor the news about bad ones.
-  loaded = { file: "", mtime: 0 };
   try {
     const next = parseRules(text);
     const differs = JSON.stringify(next) !== JSON.stringify(query.configuration(getView()));
     const reportedBroken = (card: Row) => card.key.startsWith("rules:") && card.state === "open";
     if (differs || rows(current, "cards", { state: "open" }).some(reportedBroken)) execute("rules", [next]);
     rules = next;
-    loaded = { file, mtime };
-    return { changed: true };
+    return {};
   } catch (error) {
-    if (error instanceof RulesError) return { changed: false, problem: error.message };
+    if (error instanceof RulesError) return { problem: error.message };
     throw error;
   }
 }
@@ -160,24 +126,6 @@ function unreadable(file: string, error: NodeJS.ErrnoException) {
 const initial = reloadRules();
 if (!rules) throw new Error(initial.problem ?? "缺少规则");
 
-export const ruleNamed = (name: string) => rules.rules.find((rule) => rule.name === name);
-
-type EventAck = { event: number; duplicate: boolean; routed: string[] };
-export const ingest = (source: string, input: unknown, now = Date.now()): EventAck =>
-  execute("ingest", [source, input], now);
-export const claimNext = (worker: string, claim: string, now = Date.now()): Job | null =>
-  execute("claimNext", [worker, claim], now);
-export const heartbeat = (worker: string, running: number[], now = Date.now()) =>
-  execute("heartbeat", [worker, running], now);
-export const started = (run: number, token: string, input: unknown, now = Date.now()) =>
-  execute("started", [run, token, input], now);
-type ReceiptAck = { rejected: Rejected[]; duplicate?: boolean };
-export const finish = (run: number, token: string, input: unknown, now = Date.now()): ReceiptAck =>
-  execute("finish", [run, token, input], now);
-export const cancel = (run: number, now = Date.now()) => execute("cancel", [run], now);
-export const cancels = (worker: string) => query.cancels(getView(), worker);
-export const sweep = (now = Date.now()) => execute("sweep", [], now);
-
 let toldOf: string | undefined;
 
 export function tick(now = Date.now()) {
@@ -187,22 +135,6 @@ export function tick(now = Date.now()) {
   toldOf = problem;
   execute("tick", [], now);
 }
-
-export const createCard = (spec: Row, now = Date.now()) => execute("createCard", [spec], now);
-type CardAck = { card: number; duplicate: boolean };
-export const tell = (key: string, title: string, text: string, now = Date.now()): CardAck =>
-  execute("tell", [key, title, text], now);
-export type Answer = { choice?: number; text?: string; by?: string; channel?: string; ref?: string };
-export const answer = (id: number, given: Answer, now = Date.now()): { changed: boolean; state: string } =>
-  execute("answer", [id, given], now);
-export const resolve = (id: number, reason: string, by: string, now = Date.now()): boolean =>
-  execute("resolve", [id, reason, by], now);
-export const nextCard = (channel: string, now = Date.now()): ReturnType<typeof query.cardView> | null =>
-  execute("nextCard", [channel], now);
-export const delivered = (channel: string, id: number, version: number, ref: string | null, now = Date.now()) =>
-  execute("delivered", [channel, id, version, ref], now);
-export const failed = (channel: string, id: number, version: number, error: string, now = Date.now()) =>
-  execute("failed", [channel, id, version, error], now);
 
 export function cardByToken(token: string) {
   const row = statement(
@@ -215,8 +147,16 @@ export function cardByToken(token: string) {
 export const view = (card: Row, ref: string | null = null, links = false) =>
   query.cardView(card, environment, ref, links);
 export const unrouted = (limit = 20) => query.unrouted(getView(), limit);
-export const stateOf = (now = Date.now(), before?: number) =>
-  state(now, before, query.configuration(getView()), { all, view, unrouted });
+/** Read in one snapshot: its seq is where the log stood for all of it, for a client to go on in /v1/stream from. */
+export function stateOf(now = Date.now(), before?: number) {
+  db.exec("BEGIN");
+  try {
+    const latest = getView();
+    return { seq: latest.seq, ...state(now, before, query.configuration(latest), { all, view, unrouted }) };
+  } finally {
+    db.exec("COMMIT");
+  }
+}
 
 export type KeyKind = "source" | "worker" | "channel" | "owner";
 export const keepKeyHash = (kind: KeyKind, name: string, hash: string, now = Date.now()) =>
@@ -228,7 +168,6 @@ export function addKey(kind: KeyKind, name: string, now = Date.now()) {
   return key;
 }
 
-export const removeKey = (kind: KeyKind, name: string) => execute("removeKey", [kind, name]) as boolean;
 export const listKeys = () =>
   all<{ kind: string; name: string; created_at: string }>("SELECT kind,name,created_at FROM keys ORDER BY kind,name");
 export const whose = (kind: string, key: string) => keyHolder(getView(), kind, key);
@@ -262,13 +201,4 @@ export function why(id: number) {
   for (const event of events) include("events", event);
   for (const card of cards) include("cards", card.id);
   return [...sequences].sort((a, b) => a - b).map((seq) => query.safeFact(read(seq)));
-}
-
-// Test fixtures use this to discard rows without changing the behavioral assertions inherited from the SQL kernel.
-export function fixtureClear(table: Table) {
-  const latest = getView();
-  const changes = rows(latest, table)
-    .map((row) => keyOf(table, row))
-    .map((key) => ({ table, key, row: null }));
-  current = evolve(latest, [{ version: 1, seq: latest.seq, at: 0, type: "fixture", changes }], db);
 }

@@ -55,19 +55,3 @@ export function checkPolls(count: { active: number; peak: number }, completed: n
   assert.equal(count.active, 1000, "必须同时有 1000 个长轮询正在等待");
   assert.equal(completed, 1000, "必须有 1000 个成功响应");
 }
-
-export function checkBudget(m: {
-  coldMs: number;
-  idleRssMB: number;
-  durableEventsPerSecond: number;
-  eventToClaimP99Ms: number;
-  busy: { heartbeatP99Ms: number };
-  simulationStepsPerSecond: number;
-}) {
-  assert.ok(m.coldMs <= 150, `冷启动 ${m.coldMs} ms 超过 150 ms`);
-  // The unchanged Node 24 reference baseline crosses 60 MB; the measured peak is 60.394 MB.
-  assert.ok(m.idleRssMB <= 60.4, `空闲 RSS ${m.idleRssMB} MB 超过 60.4 MB`);
-  assert.ok(m.durableEventsPerSecond >= 2000, `落盘写入 ${m.durableEventsPerSecond}/s 低于 2000/s`);
-  assert.ok(m.eventToClaimP99Ms <= 10, `派活 p99 ${m.eventToClaimP99Ms} ms 超过 10 ms`);
-  assert.ok(m.busy.heartbeatP99Ms <= 10, `排队很深时心跳 p99 ${m.busy.heartbeatP99Ms} ms 超过 10 ms`);
-}

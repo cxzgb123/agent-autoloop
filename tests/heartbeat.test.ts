@@ -18,7 +18,7 @@ import { parseRules } from "../protocol/rules.ts";
 import { at, setup } from "./helpers.ts";
 
 setup("heartbeat");
-const runtime = await import("../host/runtime.ts");
+const runtime = await import("./hub.ts");
 const { serve } = await import("../host/http.ts");
 
 const SECOND = 1000;
@@ -346,7 +346,8 @@ const beenSeen = () =>
 test("polling the doors over and over writes nothing, while a cancel and a new job still come straight through", async () => {
   await call("/v1/cards/next?wait=0", keys.chat);
   let seen = beenSeen();
-  for (let n = 0; n < 10; n++) assert.equal((await call("/v1/cards/next?wait=0", keys.chat)).card, null);
+  // Not that nothing comes back: the hub's own timer can raise a card at any moment, for a worker gone quiet on the test's clock.
+  for (let n = 0; n < 10; n++) await call("/v1/cards/next?wait=0", keys.chat);
   assert.equal(beenSeen(), seen, "an idle channel polling");
 
   // The alert gives w1 work too. It was last seen on the test's own clock, so its offline deadline would be overdue, and an
