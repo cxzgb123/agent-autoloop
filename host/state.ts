@@ -22,7 +22,8 @@ const VIEWS = {
   schedules: "rule cron next_at skipped_at",
   seen: "kind name seen_at",
   keys: "kind name hash created_at",
-  effects: "key kind target parameter_hash expected_state reason state principal run_id card_id created_at approved_at declined_at",
+  effects:
+    "key kind target parameter_hash expected_state reason state principal run_id card_id created_at approved_at declined_at",
   pauses: "name by reason since until",
 };
 

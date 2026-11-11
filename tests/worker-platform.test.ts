@@ -1,5 +1,5 @@
 // 证明 worker 在 Windows 原生环境能闭环：假 Agent 是 node 脚本（无 sh），command 走 use: "command"，
-// 退出码与结果由 platform.ts 的 Windows 分支落盘。这是文档 B1 的「provider 直接 spawn，无 shell」验证。
+// 退出码与结果由 worker 的 Windows 分支（worker/run.ts）落盘。这是文档 B1 的「provider 直接 spawn，无 shell」验证。
 // 失败方式：worker 仍依赖 /bin/sh 或 ps；Windows 上退出码没写进 exit 文件；上下文文件没到假 Agent。
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
