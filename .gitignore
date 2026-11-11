@@ -3,3 +3,6 @@ node_modules/
 *.log
 .claude/
 .omc/
+windows/publish/
+windows/WinHost/bin/
+windows/WinHost/obj/

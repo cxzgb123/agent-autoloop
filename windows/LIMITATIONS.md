@@ -6,23 +6,23 @@
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| Named Pipe DACL 实机施加 + 非预期身份被拒 | 未验证 | 本机只有一个账号。SDDL 字符串有自检，真正 `CreateNamedPipeW` 施加与「第二个账号被拒」在未合并分支（Phase 2），真机未跑 |
-| DPAPI 跨账号解封拒绝 | 未验证 | 本机只有一个账号。`SecretStore` 用 CurrentUser DPAPI、坏密文抛异常已验证（Phase 3 分支）；跨账号拒绝真机未跑 |
+| Named Pipe DACL 实机施加 + 非预期身份被拒 | 未验证 | DACL 施加（`CreateNamedPipeW` + `SECURITY_ATTRIBUTES`，读回 deny ACE）已运行验证；「第二个账号被拒」真机未跑（本机只有一个账号） |
+| DPAPI 跨账号解封拒绝 | 未验证 | 本机只有一个账号。`SecretStore` 用 CurrentUser DPAPI、坏密文抛异常已验证；跨账号拒绝真机未跑 |
 
 ## 部署与安装（需要干净 VM）
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 干净 VM 非 admin 全闭环（install/update/rollback/uninstall） | 未验证 | installer/release 只有最小结构（Phase 4 分支），真机未跑 |
+| 干净 VM 非 admin 全闭环（install/update/rollback/uninstall） | 未验证 | installer/release 只有最小结构，真机未跑 |
 | runtime 打包（self-contained / MSIX / Windows App SDK runtime） | 未验证 | 本机只验证 framework-dependent |
 
 ## 常驻与通知（需要真实桌面会话）
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 真实 Task Scheduler 登录任务部署 | 未验证 | 只有 XML 静态自检（Phase 4 分支），真实安装与停机测试未跑 |
+| 真实 Task Scheduler 登录任务部署 | 未验证 | 只有 XML 静态自检，真实安装与停机测试未跑 |
 | 真实 Toast 激活 / 通知 | 未验证 | 只有骨架与假命令自检；CI 没有桌面，不能假装跑过 Toast |
-| 管理页可达性 | 未验证 | WinForms 页面只构造不 Show（Phase 4 分支），真实交互未跑 |
+| 管理页可达性 | 未验证 | WinForms 页面只构造不 Show，真实交互未跑 |
 
 ## 长期与真实运行
 
