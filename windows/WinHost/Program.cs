@@ -39,8 +39,11 @@ switch (action)
     case "pipe":
         ControlPipeSelftest();
         break;
+    case "secrets":
+        SecretStoreSelftest();
+        break;
     default:
-        Console.Error.WriteLine($"未知动作：{action}（rounds | hang | tree | ledger | pipe | selftest）");
+        Console.Error.WriteLine($"未知动作：{action}（rounds | hang | tree | ledger | pipe | secrets | selftest）");
         Environment.Exit(2);
         break;
 }
@@ -176,6 +179,36 @@ static void RunLedger(string node, string mockAgent)
     if (distinct != total) { Console.Error.WriteLine("[ledger] FAIL: 同 launchID 出现多棵树"); Environment.Exit(1); }
 
     Console.WriteLine("Phase 2 身份与账本 PASS（还在跑/已退/启动失败 三态可区分）");
+}
+
+// --- 秘密隔离 ---
+static void SecretStoreSelftest()
+{
+    var plaintext = "agent-autoloop-test-secret-" + Guid.NewGuid().ToString("N");
+    var ciphertext = SecretStore.Protect(plaintext);
+
+    // 明文不得出现在密文里（文档 11.1：秘密脱敏，不落明文）。
+    var leaked = Encoding.UTF8.GetString(ciphertext).Contains(plaintext);
+    Console.WriteLine($"[secrets] 密文不含明文 = {!leaked}（期望 True）");
+    if (leaked) { Console.Error.WriteLine("[secrets] FAIL: 明文泄露进密文"); Environment.Exit(1); }
+
+    // 同一用户能解回原文。
+    var restored = SecretStore.Unprotect(ciphertext);
+    var roundTrips = restored == plaintext;
+    Console.WriteLine($"[secrets] 解封还原原文 = {roundTrips}（期望 True）");
+    if (!roundTrips) { Console.Error.WriteLine("[secrets] FAIL: 解封结果与原文不一致"); Environment.Exit(1); }
+
+    // 坏密文（坏 key / 篡改）抛异常，绝不静默返回明文。
+    var corrupted = (byte[])ciphertext.Clone();
+    corrupted[^1] ^= 0xFF;
+    var throws = false;
+    try { _ = SecretStore.Unprotect(corrupted); }
+    catch { throws = true; }
+    Console.WriteLine($"[secrets] 坏密文被拒 = {throws}（期望 True）");
+    if (!throws) { Console.Error.WriteLine("[secrets] FAIL: 坏密文被静默放行"); Environment.Exit(1); }
+
+    // 跨账号解封（另一个 Windows 用户解不开当前用户的密文）需要第二个账号，本机只有一个，记 NOT_RUN 不做伪证。
+    Console.WriteLine("Phase 3 秘密隔离 PASS（跨账号解封拒绝：NOT_RUN，需第二个账号）");
 }
 
 // --- 工具 ---

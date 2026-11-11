@@ -7,9 +7,20 @@ const rows = (view: Snapshot, table: keyof Snapshot["tables"]) => Object.values(
 // Independent replay oracle: it checks the indexed projection without using its write or query implementation.
 export function replay(log: Fact[]): Snapshot {
   const tables = Object.fromEntries(
-    ["events", "runs", "run_events", "cards", "deliveries", "timers", "schedules", "seen", "keys", "config", "due"].map(
-      (t) => [t, {}],
-    ),
+    [
+      "events",
+      "runs",
+      "run_events",
+      "cards",
+      "deliveries",
+      "timers",
+      "schedules",
+      "seen",
+      "keys",
+      "effects",
+      "config",
+      "due",
+    ].map((t) => [t, {}]),
   ) as Snapshot["tables"];
   const next: Record<string, number> = {};
   let seq = 0;

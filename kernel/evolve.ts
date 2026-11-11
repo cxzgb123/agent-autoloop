@@ -11,6 +11,7 @@ export const TABLES = [
   "schedules",
   "seen",
   "keys",
+  "effects",
   "config",
   "due",
 ] as const;
@@ -40,6 +41,7 @@ const indexes: Partial<Record<Table, string[][]>> = {
   ],
   deliveries: [["channel"], ["card_id"]],
   due: [["at"]],
+  effects: [["state", "key"], ["run_id"]],
 };
 const field = (name: string) => `json_extract(data,'$.${name}')`;
 const statements = new WeakMap<DatabaseSync, Map<string, StatementSync>>();
@@ -180,6 +182,7 @@ export function keyOf(table: Table, row: Row): string {
   if (table === "deliveries") return `${row.card_id}:${row.channel}`;
   if (table === "schedules") return row.rule;
   if (table === "seen" || table === "keys") return `${row.kind}:${row.name}`;
+  if (table === "effects") return row.key;
   if (table === "due") return `${row.kind}:${row.key}`;
   return "rules";
 }
