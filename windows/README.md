@@ -60,6 +60,12 @@ Phase 4 通知骨架 PASS（真实 Toast 注册/激活/勿扰/Narrator：NOT_RUN
 6. **管理页真实显示与可达性**（文档 15.1 / 18.1 UI/通知层）：高 DPI、键盘导航、Narrator、系统高对比、中文用户名、长文本与 RTL 不溢出都未做；`tray` selftest 只构造页面与托盘标题，不 Show。
 7. **标准模式审批端与执行端身份隔离**（文档 10.3 严格模式）：标准模式不做抗恶意同用户保证，一个同用户进程仍可能绕过逻辑审批；这是文档明说的边界，不是本阶段要消除的缺口。
 
+## 阶段 5 试点收口的文档与 opt-in 骨架
+
+- `SUPPORT.md`：首发支持 / 真机回归后才标注 / 不列首发 三档支持矩阵（对应方案文档 471 行）。
+- `LIMITATIONS.md`：全项目 NOT_RUN 项的正式用户清单，逐项标注「未验证，不开放正式承诺」。
+- `worker/probe.ts` + `tests/probe.test.ts` + `tests/fixtures/fake-cli.mjs`：能力探测与 realCLI opt-in 门。探测只跑安全参数（版本/帮助），**绝不花 model 费用**；真实 CLI 跑一次花 model 费用，只有用户明确带 `--run` 才算授权。真实 agent 跑一律 NOT_RUN。
+
 ## 本次交付的边界
 
 - 这是**独立的技术尖峰 + UX/交付骨架**，不是产品入口；没有接 TS Hub，账本是有状态可区分的**内存**切片（持久化与 Hub 重启对账是后续阶段），`launchID` 仍是 `DateTime.UtcNow.Ticks`。
