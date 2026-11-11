@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!-- Task Scheduler 登录任务（文档 15.3）：NOT_RUN 骨架。真机部署需干净 VM 核验。
+     合同逐条：InteractiveToken 登录触发、最低 run level、不存密码、ExecutionTimeLimit=PT0S、
+     MultipleInstancesPolicy=IgnoreNew、WakeToRun=false、日志触发、Exec 用稳定绝对 launcher 路径。 -->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>agent-autoloop WinHost 常驻宿主：登录触发、当前用户 InteractiveToken、不保存密码。</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>__CURRENT_USER__</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>__CURRENT_USER__</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>__LAUNCHER_PATH__</Command>
+      <Arguments>--dataHome "__DATA_HOME__"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
